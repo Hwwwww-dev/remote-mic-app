@@ -1690,6 +1690,9 @@
 "action_feedback.success.title" = "已执行「%@」";
 "action_feedback.success.repeat" = "已执行「%@」×%@";
 "action_feedback.success.multiple" = "已执行 %@ 个动作";
+"action_feedback.hud.status.idle" = "待命";
+"action_feedback.hud.status.attention" = "需要处理";
+"action_feedback.hud.session_count" = "本次 %@";
 "action_feedback.failure.title" = "「%@」未执行";
 "action_feedback.timeout.title" = "「%@」超时";
 "action_feedback.timeout.context" = "超过 10 秒";
@@ -1719,6 +1722,9 @@
 "action_feedback.diagnostics.note" = "不含动作名称、快捷键内容、脚本源码、输入内容或第三方 App 内容。";
 "settings.general.action_feedback.title" = "动作执行结果提示";
 "settings.general.action_feedback.help" = "“关闭所有提示”隐藏成功和失败；“关闭成功提示”只隐藏成功。动作仍会执行，诊断仍会记录。";
+"settings.general.hud.title" = "屏幕浮层（HUD）";
+"settings.general.hud.help" = "独立于动作反馈的一层浮窗，常显在屏幕最上层，可以整块拖到任意位置，关掉后不再出现。";
+"settings.general.hud.toggle" = "显示 HUD";
 "settings.general.hide_all_action_feedback" = "关闭所有提示";
 "settings.general.hide_action_success_feedback" = "关闭成功提示";
 "action_feedback.open_application_name" = "打开%@";

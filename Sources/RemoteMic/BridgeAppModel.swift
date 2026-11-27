@@ -9233,9 +9233,9 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
         let actionID = configured.action.rawValue
         let actionName = actionFeedbackName(for: configured, localization: localization)
         let stepCount = actionFeedbackStepCount(for: configured)
+        // HUD 是常显监控面板：每次执行都要有一条记录，不再按动作类型过滤成功提示。
         let presentsSuccess = settings.showActionFeedback
             && settings.showActionSuccessFeedback
-            && configured.showsActionSuccessFeedback
         let presentsFailure = settings.showActionFeedback
         let handlers = actionFeedbackHandlers(for: configured)
         let operationID = UUID().uuidString
@@ -9525,8 +9525,7 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
             elapsedMilliseconds: elapsedMilliseconds,
             stepCount: pending.stepCount,
             presentsSuccess: settings.showActionFeedback
-                && settings.showActionSuccessFeedback
-                && pending.configured.showsActionSuccessFeedback,
+                && settings.showActionSuccessFeedback,
             presentsFailure: settings.showActionFeedback
         )
         let handlers = actionFeedbackHandlers(for: pending.configured)

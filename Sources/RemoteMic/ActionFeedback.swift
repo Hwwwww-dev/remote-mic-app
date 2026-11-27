@@ -142,6 +142,8 @@ struct ActionFeedbackPresentation: Equatable, Identifiable, Sendable {
     let copiedTitle: String?
     let diagnostics: String?
     let count: Int
+    /// 触发这条反馈的操作耗时，监控面板用它显示一行耗时。
+    let elapsedMilliseconds: Int
     let announces: Bool
     let accessibilityAnnouncement: String?
     let errorPrefix: String?
@@ -169,6 +171,10 @@ struct ActionFeedbackStrings: Sendable {
     let diagnosticsNote: String
     let errorPrefix: String
     let closeLabel: String
+    /// 常显监控面板的状态行与计数文案。
+    let hudIdleStatus: String
+    let hudAttentionStatus: String
+    let hudSessionCountFormat: String
 
     init(localization: LocalizationStore) {
         locale = localization.locale
@@ -200,6 +206,9 @@ struct ActionFeedbackStrings: Sendable {
         diagnosticsNote = text("action_feedback.diagnostics.note")
         errorPrefix = text("notice.accessibility.error_prefix")
         closeLabel = text("notice.accessibility.dismiss")
+        hudIdleStatus = text("action_feedback.hud.status.idle")
+        hudAttentionStatus = text("action_feedback.hud.status.attention")
+        hudSessionCountFormat = text("action_feedback.hud.session_count")
     }
 
     func format(_ template: String, _ arguments: String...) -> String {
@@ -244,14 +253,20 @@ enum ActionFeedbackDiagnostics {
     }
 }
 
-/// App 级 HUD 的唯一状态源。只做合并、优先级、计时和复制，不自己创建窗口；
-/// `ActionFeedbackWindowCoordinator` 观察它并维护真实浮层。
+/// 动作反馈的唯一状态源。只做合并、优先级、计时和复制，不自己创建窗口：
+/// 它把结果映射成 `HudCard` 推给独立的 `HudCenter`，由后者负责显示。
 @MainActor
 final class ActionFeedbackCenter: ObservableObject {
     static let shared = ActionFeedbackCenter()
 
     @Published private(set) var presentation: ActionFeedbackPresentation?
     @Published private(set) var copiedPresentationID: UUID?
+    /// 常显监控面板在空闲时显示“最近一条”。失败被关闭或成功自动淡出后仍保留。
+    @Published private(set) var lastPresentation: ActionFeedbackPresentation?
+    @Published private(set) var lastEventAt: Date?
+    @Published private(set) var sessionCount = 0
+    /// 最近一次记录携带的文案，供空闲状态行使用（语言切换后会在下一次动作时刷新）。
+    @Published private(set) var latestStrings: ActionFeedbackStrings?
 
     private struct LastPresented {
         let kind: ActionFeedbackPresentation.Kind
@@ -266,7 +281,6 @@ final class ActionFeedbackCenter: ObservableObject {
 
     private let now: () -> Date
     private let successDuration: TimeInterval
-    private let failureDuration: TimeInterval
     private let mergeWindow: TimeInterval
     private let copiedDuration: TimeInterval
     private let log: (String) -> Void
@@ -277,14 +291,16 @@ final class ActionFeedbackCenter: ObservableObject {
     private var copyResetTask: Task<Void, Never>?
     private var dismissDeadline: Date?
     private var remainingDismissal: TimeInterval?
+    private var installedDuration: TimeInterval = 0
     private var isHovering = false
+    private var isDragging = false
+    private var isPaused: Bool { isHovering || isDragging }
     private var eventHandlers: [ActionFeedbackAction: @MainActor () -> Void] = [:]
     private var standardHandlers: [ActionFeedbackAction: @MainActor () -> Void] = [:]
 
     init(
         now: @escaping () -> Date = Date.init,
         successDuration: TimeInterval = 1.3,
-        failureDuration: TimeInterval = 12,
         mergeWindow: TimeInterval = 2,
         copiedDuration: TimeInterval = 2,
         log: @escaping (String) -> Void = { AppLogger.shared.write($0) },
@@ -296,11 +312,20 @@ final class ActionFeedbackCenter: ObservableObject {
     ) {
         self.now = now
         self.successDuration = successDuration
-        self.failureDuration = failureDuration
         self.mergeWindow = mergeWindow
         self.copiedDuration = copiedDuration
         self.log = log
         self.pasteboardWriter = pasteboardWriter
+        // HUD 是独立的一层：它只管显示和交互，这里把用户的动作接回业务侧。
+        HudCenter.shared.onInteractionChange = { [weak self] interacting in
+            self?.setHovering(interacting)
+        }
+        HudCenter.shared.onCopyRequested = { [weak self] _ in
+            self?.copyDiagnostics()
+        }
+        HudCenter.shared.onCloseRequested = { [weak self] _ in
+            self?.dismiss()
+        }
     }
 
     /// 由 AppDelegate 配置。权限设置与“重新选择”不依赖某一按键，所以是标准动作。
@@ -318,6 +343,7 @@ final class ActionFeedbackCenter: ObservableObject {
         handlers: ActionFeedbackActionHandlers = ActionFeedbackActionHandlers()
     ) {
         let timestamp = now()
+        latestStrings = strings
         let step = event.stepIndex.map(String.init) ?? "unknown"
         let steps = event.stepCount.map(String.init) ?? "unknown"
         var count = 0
@@ -347,7 +373,9 @@ final class ActionFeedbackCenter: ObservableObject {
             install(
                 newPresentation,
                 handlers: handlers,
-                duration: successDuration
+                duration: successDuration,
+                at: timestamp,
+                strings: strings
             )
             lastPresented = LastPresented(
                 kind: .success,
@@ -379,7 +407,9 @@ final class ActionFeedbackCenter: ObservableObject {
             install(
                 newPresentation,
                 handlers: handlers,
-                duration: failureDuration
+                duration: nil,
+                at: timestamp,
+                strings: strings
             )
             lastPresented = LastPresented(
                 kind: .failure,
@@ -402,19 +432,30 @@ final class ActionFeedbackCenter: ObservableObject {
         )
     }
 
+    /// 指针进入 HUD。成功提示同样暂停，否则 1.3 秒的气泡来不及被抓住拖动。
     func setHovering(_ hovering: Bool) {
-        guard presentation?.kind == .failure, hovering != isHovering else { return }
-        if hovering {
-            isHovering = true
-            if let deadline = dismissDeadline {
-                remainingDismissal = max(0, deadline.timeIntervalSince(now()))
-            }
+        guard hovering != isHovering else { return }
+        isHovering = hovering
+        applyPauseState()
+    }
+
+    /// 拖动期间暂停倒计时，松手后按剩余时长继续。
+    func setDragging(_ dragging: Bool) {
+        guard dragging != isDragging else { return }
+        isDragging = dragging
+        applyPauseState()
+    }
+
+    private func applyPauseState() {
+        guard presentation != nil else { return }
+        if isPaused {
+            guard dismissDeadline != nil else { return }
+            remainingDismissal = max(0, dismissDeadline?.timeIntervalSince(now()) ?? 0)
             dismissTask?.cancel()
             dismissTask = nil
             dismissDeadline = nil
         } else {
-            isHovering = false
-            let remaining = remainingDismissal ?? failureDuration
+            guard let remaining = remainingDismissal else { return }
             remainingDismissal = nil
             if remaining <= 0.01 {
                 dismiss()
@@ -431,6 +472,7 @@ final class ActionFeedbackCenter: ObservableObject {
         else { return }
         pasteboardWriter(diagnostics)
         copiedPresentationID = presentation.id
+        HudCenter.shared.markCopied(presentation.id)
         copyResetTask?.cancel()
         let presentationID = presentation.id
         let resetNanoseconds = UInt64(max(0, copiedDuration) * 1_000_000_000)
@@ -439,6 +481,7 @@ final class ActionFeedbackCenter: ObservableObject {
             guard !Task.isCancelled else { return }
             guard let self, self.copiedPresentationID == presentationID else { return }
             self.copiedPresentationID = nil
+            HudCenter.shared.markCopied(nil)
         }
         log(
             "ACTION FEEDBACK operation_id=\(presentation.operationID) " +
@@ -456,6 +499,7 @@ final class ActionFeedbackCenter: ObservableObject {
         handler()
     }
 
+    /// 关掉当前这条反馈。常显面板随后回到空闲状态，仍显示“最近一条”。
     func dismiss() {
         dismissTask?.cancel()
         dismissTask = nil
@@ -463,16 +507,30 @@ final class ActionFeedbackCenter: ObservableObject {
         copyResetTask = nil
         dismissDeadline = nil
         remainingDismissal = nil
+        installedDuration = 0
         isHovering = false
+        isDragging = false
         presentation = nil
         copiedPresentationID = nil
         eventHandlers = [:]
+        // HUD 留在待命态，只把这张卡撤掉。
+        HudCenter.shared.clearCard()
+    }
+
+    /// 关闭全部反馈（设置里关掉开关时调用），连同常显面板的“最近一条”一起清空。
+    func reset() {
+        dismiss()
+        HudCenter.shared.reset()
+        lastPresentation = nil
+        lastEventAt = nil
+        sessionCount = 0
+        latestStrings = nil
     }
 
     /// 仅测试使用：清掉上一次合并状态，模拟新进程。
     func resetMergeStateForTesting() {
         lastPresented = nil
-        dismiss()
+        reset()
         standardHandlers = [:]
     }
 
@@ -537,6 +595,7 @@ final class ActionFeedbackCenter: ObservableObject {
             copiedTitle: nil,
             diagnostics: nil,
             count: count,
+            elapsedMilliseconds: event.elapsedMilliseconds,
             announces: false,
             accessibilityAnnouncement: nil,
             errorPrefix: nil,
@@ -599,6 +658,7 @@ final class ActionFeedbackCenter: ObservableObject {
             copiedTitle: strings.copiedTitle,
             diagnostics: ActionFeedbackDiagnostics.text(event: event, strings: strings),
             count: count,
+            elapsedMilliseconds: event.elapsedMilliseconds,
             announces: announces,
             accessibilityAnnouncement: announcement,
             errorPrefix: strings.errorPrefix,
@@ -609,13 +669,19 @@ final class ActionFeedbackCenter: ObservableObject {
     private func install(
         _ presentation: ActionFeedbackPresentation,
         handlers: ActionFeedbackActionHandlers,
-        duration: TimeInterval
+        duration: TimeInterval?,
+        at timestamp: Date,
+        strings: ActionFeedbackStrings
     ) {
         self.presentation = presentation
+        lastPresentation = presentation
+        lastEventAt = timestamp
+        sessionCount += 1
         copiedPresentationID = nil
         copyResetTask?.cancel()
         copyResetTask = nil
         eventHandlers = [:]
+        installedDuration = duration ?? 0
         if let handler = handlers.openApplication {
             eventHandlers[.openApplication] = handler
         }
@@ -625,16 +691,60 @@ final class ActionFeedbackCenter: ObservableObject {
         if let handler = handlers.retry {
             eventHandlers[.retry] = handler
         }
-        if isHovering, presentation.kind == .failure {
-            dismissTask?.cancel()
-            dismissTask = nil
-            dismissDeadline = nil
-            remainingDismissal = duration
-        } else {
+        dismissTask?.cancel()
+        dismissTask = nil
+        dismissDeadline = nil
+        if let duration, !isPaused {
             isHovering = false
             remainingDismissal = nil
             scheduleDismissal(after: duration)
+        } else {
+            // nil 表示不自动消失（失败停在面板里等用户处理）。
+            remainingDismissal = duration
         }
+        HudCenter.shared.configure(
+            strings: HudStrings(
+                locale: strings.locale,
+                idleStatus: strings.hudIdleStatus,
+                attentionStatus: strings.hudAttentionStatus,
+                sessionCountFormat: strings.hudSessionCountFormat
+            )
+        )
+        HudCenter.shared.present(
+            Self.hudCard(for: presentation, strings: strings) { [weak self] action in
+                self?.perform(action)
+            }
+        )
+    }
+
+    /// 把动作反馈翻译成 HUD 的通用卡片。HUD 不认识动作反馈，只认这张卡。
+    static func hudCard(
+        for presentation: ActionFeedbackPresentation,
+        strings: ActionFeedbackStrings,
+        perform: @escaping @MainActor (ActionFeedbackAction) -> Void
+    ) -> HudCard {
+        let isFailure = presentation.kind == .failure
+        let primary = presentation.action.map { action in
+            HudAction(title: presentation.actionTitle ?? "", isProminent: true) {
+                perform(action)
+            }
+        }
+        let secondary = presentation.copyTitle.map { title in
+            HudAction(title: title, isProminent: false) { }
+        }
+        return HudCard(
+            tone: isFailure ? .failure : .success,
+            title: presentation.title,
+            context: presentation.context,
+            detail: presentation.detail,
+            elapsedMilliseconds: presentation.elapsedMilliseconds,
+            primaryAction: primary,
+            secondaryAction: secondary,
+            secondaryTitleWhenCopied: presentation.copiedTitle,
+            closeLabel: presentation.closeLabel ?? strings.closeLabel,
+            announces: presentation.announces,
+            accessibilityAnnouncement: presentation.accessibilityAnnouncement
+        )
     }
 
     private func scheduleDismissal(after seconds: TimeInterval) {
@@ -663,31 +773,9 @@ final class ActionFeedbackCenter: ObservableObject {
     }
 }
 
-/// 屏幕底部居中的纯布局。气泡下缘距可见区域底部 56pt；窗口自身还带 16pt
-/// 透明内边距用于阴影，所以面板原点要再减掉这段 padding。
-enum ActionFeedbackLayout {
-    static let bubbleBottomInset: CGFloat = 56
-    static let contentPadding: CGFloat = 16
-    static let edgeMargin: CGFloat = 8
-
-    static func origin(
-        visibleFrame: CGRect,
-        panelSize: CGSize,
-        bubbleBottomInset: CGFloat = ActionFeedbackLayout.bubbleBottomInset,
-        contentPadding: CGFloat = ActionFeedbackLayout.contentPadding
-    ) -> CGPoint {
-        let preferredX = visibleFrame.midX - panelSize.width / 2
-        let minimumX = visibleFrame.minX + edgeMargin
-        let maximumX = visibleFrame.maxX - panelSize.width - edgeMargin
-        let x = maximumX >= minimumX
-            ? min(max(preferredX, minimumX), maximumX)
-            : minimumX
-        let preferredY = visibleFrame.minY + bubbleBottomInset - contentPadding
-        let y = max(visibleFrame.minY + edgeMargin, preferredY)
-        return CGPoint(x: x, y: y)
-    }
-}
-
+/// 纯布局计算。默认落点是屏幕底部居中：气泡下缘距可见区域底部 56pt；窗口自身
+/// 还带 16pt 透明内边距用于阴影，所以面板原点要再减掉这段 padding。
+/// 用户拖动过之后改用按显示器记住的归一化位置。
 /// 私有组合动作通过公开的 `executionEvents` 上报最终 terminal。
 /// 这里只映射结果，不读取私有模块的实现。
 enum ActionFeedbackMacroClassifier {

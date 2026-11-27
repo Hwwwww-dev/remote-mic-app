@@ -812,6 +812,16 @@ struct SettingsView: View {
         _isConfigurationDropTargeted = State(initialValue: initialConfigurationDropTargeted)
     }
 
+    private var showsHud: Binding<Bool> {
+        Binding(
+            get: { settings.showHud },
+            set: { isOn in
+                settings.showHud = isOn
+                HudCenter.shared.setEnabled(isOn)
+            }
+        )
+    }
+
     private var hideAllActionFeedback: Binding<Bool> {
         Binding(
             get: { !settings.showActionFeedback },
@@ -819,7 +829,8 @@ struct SettingsView: View {
                 settings.showActionFeedback = !isOff
                 if isOff {
                     Task { @MainActor in
-                        ActionFeedbackCenter.shared.dismiss()
+                        // 面板常显，关掉开关要把会话状态一起清掉才会隐藏。
+                        ActionFeedbackCenter.shared.reset()
                     }
                 }
             }
@@ -7913,6 +7924,36 @@ struct SettingsView: View {
                                     .frame(maxWidth: .infinity, alignment: .trailing)
                                     .padding(.bottom, 8)
                             }
+
+                            Divider()
+
+                            HStack(spacing: 14) {
+                                Image(systemName: "rectangle.on.rectangle")
+                                    .font(.title3)
+                                    .foregroundStyle(Color.accentColor)
+                                    .frame(width: 34)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(localization.text(
+                                        "settings.general.hud.title"
+                                    ))
+                                    .font(.subheadline.weight(.semibold))
+                                    Text(localization.text(
+                                        "settings.general.hud.help"
+                                    ))
+                                    .font(.system(size: 12))
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                Spacer(minLength: 12)
+                                Toggle(isOn: showsHud) {
+                                    Text(localization.text(
+                                        "settings.general.hud.toggle"
+                                    ))
+                                    .font(.system(size: 12))
+                                }
+                                .toggleStyle(.switch)
+                            }
+                            .padding(.vertical, 8)
 
                             Divider()
 

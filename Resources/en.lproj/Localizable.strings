@@ -1691,6 +1691,9 @@
 "action_feedback.success.title" = "Ran “%@”";
 "action_feedback.success.repeat" = "Ran “%@” ×%@";
 "action_feedback.success.multiple" = "Ran %@ actions";
+"action_feedback.hud.status.idle" = "Idle";
+"action_feedback.hud.status.attention" = "Needs attention";
+"action_feedback.hud.session_count" = "This session %@";
 "action_feedback.failure.title" = "“%@” didn’t run";
 "action_feedback.timeout.title" = "“%@” timed out";
 "action_feedback.timeout.context" = "Took longer than 10 seconds";
@@ -1720,6 +1723,9 @@
 "action_feedback.diagnostics.note" = "No action name, shortcut, script source, input, or third-party app content is included.";
 "settings.general.action_feedback.title" = "Action result feedback";
 "settings.general.action_feedback.help" = "“Turn off all feedback” hides success and failure. “Turn off success feedback” hides success only. Actions still run and diagnostics are still recorded.";
+"settings.general.hud.title" = "On-screen HUD";
+"settings.general.hud.help" = "A separate always-on overlay above all windows. Drag it anywhere; turn it off to hide it entirely.";
+"settings.general.hud.toggle" = "Show HUD";
 "settings.general.hide_all_action_feedback" = "Turn off all feedback";
 "settings.general.hide_action_success_feedback" = "Turn off success feedback";
 "action_feedback.open_application_name" = "Open %@";

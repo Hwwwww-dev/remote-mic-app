@@ -284,7 +284,7 @@ private final class RemoteMicAppDelegate: NSObject, NSApplicationDelegate, NSMen
     /// 因此这里必须保存最新引用，供 `validateMenuItem` 判断。
     private var findMenuItem: NSMenuItem?
     private let settingsNavigation = SettingsNavigationStore()
-    private let actionFeedbackWindow = ActionFeedbackWindowCoordinator()
+    private let hudPanel = HudPanelCoordinator()
     /// 「前往」菜单。`configureApplicationMenu()` 在语言切换后会重建菜单，
     /// 因此保存最新引用，供 `menuNeedsUpdate` 识别。
     private var goMenu: NSMenu?
@@ -412,7 +412,7 @@ private final class RemoteMicAppDelegate: NSObject, NSApplicationDelegate, NSMen
         )
         model.privateFeature.hideHUDImmediately()
         model.stop()
-        actionFeedbackWindow.stop()
+        hudPanel.stop()
         FnKeyDiagnostics.logSnapshot(
             source: "terminate_end",
             voiceKeyMode: model.settings.voiceKeyMode.rawValue,
@@ -1250,7 +1250,10 @@ private final class RemoteMicAppDelegate: NSObject, NSApplicationDelegate, NSMen
                 self?.showSettingsWindow(initialSection: .mapping)
             }
         )
-        actionFeedbackWindow.start()
+        // HUD 是独立功能：自己的开关决定它开不开机就常显，动作反馈只是它的一个内容来源。
+        HudCenter.shared.configure(strings: HudStrings(localization: localization))
+        HudCenter.shared.setEnabled(model.settings.showHud)
+        hudPanel.start()
         showActionFeedbackPreviewIfRequested()
     }
 

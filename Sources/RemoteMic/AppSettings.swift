@@ -333,6 +333,7 @@ final class AppSettings: ObservableObject {
         static let appIconIdentifier = "appIconIdentifier"
         static let showDockIcon = "showDockIcon"
         static let showStatusBarIcon = "showStatusBarIcon"
+        static let showHud = "showHud"
         static let showActionFeedback = "showActionFeedback"
         static let showActionSuccessFeedback = "showActionSuccessFeedback"
         static let openMainWindowAtLaunch = "openMainWindowAtLaunch"
@@ -736,6 +737,14 @@ final class AppSettings: ObservableObject {
 
     @Published var showStatusBarIcon: Bool {
         didSet { defaults.set(showStatusBarIcon, forKey: Keys.showStatusBarIcon) }
+    }
+
+    /// 独立 HUD 浮层的总开关。和「动作反馈」分开：关掉动作反馈不影响 HUD 常显，
+    /// 关掉 HUD 只是不显示这块面板。
+    @Published var showHud: Bool {
+        didSet {
+            defaults.set(showHud, forKey: Keys.showHud)
+        }
     }
 
     @Published var showActionFeedback: Bool {
@@ -1189,6 +1198,9 @@ final class AppSettings: ObservableObject {
         showStatusBarIcon = defaults.object(forKey: Keys.showStatusBarIcon) == nil
             ? true
             : defaults.bool(forKey: Keys.showStatusBarIcon)
+        showHud = defaults.object(forKey: Keys.showHud) == nil
+            ? true
+            : defaults.bool(forKey: Keys.showHud)
         showActionFeedback = defaults.object(forKey: Keys.showActionFeedback) == nil
             ? true
             : defaults.bool(forKey: Keys.showActionFeedback)

@@ -1,0 +1,237 @@
+import AppKit
+import Combine
+import Foundation
+
+/// HUD 是独立于具体功能的一层屏幕浮窗：它不认识动作反馈，只负责把一张卡片
+/// 画在所有窗口之上、记住位置、处理拖动和悬停。任何功能都可以往它推卡片。
+enum HudTone: Equatable, Sendable {
+    case idle
+    case success
+    case failure
+}
+
+struct HudAction {
+    let title: String
+    let isProminent: Bool
+    let perform: @MainActor () -> Void
+}
+
+struct HudCard: Identifiable {
+    let id: UUID
+    let tone: HudTone
+    let title: String
+    let context: String?
+    let detail: String?
+    let elapsedMilliseconds: Int?
+    let primaryAction: HudAction?
+    let secondaryAction: HudAction?
+    /// 次要按钮复制成功后的标题（动作反馈的「已复制」），其它来源可以留空。
+    let secondaryTitleWhenCopied: String?
+    let closeLabel: String
+    let announces: Bool
+    let accessibilityAnnouncement: String?
+
+    init(
+        tone: HudTone,
+        title: String,
+        context: String? = nil,
+        detail: String? = nil,
+        elapsedMilliseconds: Int? = nil,
+        primaryAction: HudAction? = nil,
+        secondaryAction: HudAction? = nil,
+        secondaryTitleWhenCopied: String? = nil,
+        closeLabel: String = "",
+        announces: Bool = false,
+        accessibilityAnnouncement: String? = nil
+    ) {
+        id = UUID()
+        self.tone = tone
+        self.title = title
+        self.context = context
+        self.detail = detail
+        self.elapsedMilliseconds = elapsedMilliseconds
+        self.primaryAction = primaryAction
+        self.secondaryAction = secondaryAction
+        self.secondaryTitleWhenCopied = secondaryTitleWhenCopied
+        self.closeLabel = closeLabel
+        self.announces = announces
+        self.accessibilityAnnouncement = accessibilityAnnouncement
+    }
+}
+
+/// HUD 自己的状态行文案，由 App 语言构建，业务方不需要关心。
+struct HudStrings: Sendable {
+    let locale: Locale
+    let idleStatus: String
+    let attentionStatus: String
+    let sessionCountFormat: String
+
+    init(localization: LocalizationStore) {
+        locale = localization.locale
+        idleStatus = localization.text("action_feedback.hud.status.idle")
+        attentionStatus = localization.text("action_feedback.hud.status.attention")
+        sessionCountFormat = localization.text("action_feedback.hud.session_count")
+    }
+
+    /// 从已经构建好的动作反馈文案里取 HUD 需要的三条，避免重复读本地化表。
+    init(
+        locale: Locale,
+        idleStatus: String,
+        attentionStatus: String,
+        sessionCountFormat: String
+    ) {
+        self.locale = locale
+        self.idleStatus = idleStatus
+        self.attentionStatus = attentionStatus
+        self.sessionCountFormat = sessionCountFormat
+    }
+
+    func format(_ template: String, _ arguments: String...) -> String {
+        String(format: template, locale: locale, arguments: arguments)
+    }
+}
+
+/// HUD 的几何：默认落点、归一化记忆和夹边。只跟窗口几何有关，与内容无关。
+enum HudLayout {
+    static let width: CGFloat = 320
+    static let edgeMargin: CGFloat = 8
+    static let contentPadding: CGFloat = 16
+    static let bottomInset: CGFloat = 56
+
+    static func origin(
+        visibleFrame: CGRect,
+        panelSize: CGSize,
+        bottomInset: CGFloat = HudLayout.bottomInset,
+        contentPadding: CGFloat = HudLayout.contentPadding
+    ) -> CGPoint {
+        let preferredX = visibleFrame.midX - panelSize.width / 2
+        let minimumX = visibleFrame.minX + edgeMargin
+        let maximumX = visibleFrame.maxX - panelSize.width - edgeMargin
+        let x = maximumX >= minimumX
+            ? min(max(preferredX, minimumX), maximumX)
+            : minimumX
+        let preferredY = visibleFrame.minY + bottomInset - contentPadding
+        let y = max(visibleFrame.minY + edgeMargin, preferredY)
+        return CGPoint(x: x, y: y)
+    }
+
+    /// 把面板原点折成 0...1，便于换屏或改分辨率后按比例还原。
+    static func normalizedOrigin(
+        origin: CGPoint,
+        panelSize: CGSize,
+        visibleFrame: CGRect
+    ) -> CGPoint {
+        func ratio(_ value: CGFloat, _ minimum: CGFloat, _ span: CGFloat) -> CGFloat {
+            guard span > 0 else { return 0 }
+            return min(max((value - minimum) / span, 0), 1)
+        }
+        return CGPoint(
+            x: ratio(origin.x, visibleFrame.minX, visibleFrame.width - panelSize.width),
+            y: ratio(origin.y, visibleFrame.minY, visibleFrame.height - panelSize.height)
+        )
+    }
+
+    /// 拖动和还原时都夹回可见区域，避免面板被菜单栏、Dock 或屏幕边缘截掉。
+    static func clampedOrigin(
+        _ origin: CGPoint,
+        panelSize: CGSize,
+        visibleFrame: CGRect
+    ) -> CGPoint {
+        let minimumX = visibleFrame.minX + edgeMargin
+        let maximumX = visibleFrame.maxX - panelSize.width - edgeMargin
+        let minimumY = visibleFrame.minY + edgeMargin
+        let maximumY = visibleFrame.maxY - panelSize.height - edgeMargin
+        return CGPoint(
+            x: maximumX >= minimumX ? min(max(origin.x, minimumX), maximumX) : minimumX,
+            y: maximumY >= minimumY ? min(max(origin.y, minimumY), maximumY) : minimumY
+        )
+    }
+
+    static func origin(
+        normalizedX: CGFloat,
+        normalizedY: CGFloat,
+        panelSize: CGSize,
+        visibleFrame: CGRect
+    ) -> CGPoint {
+        let x = visibleFrame.minX + normalizedX * max(0, visibleFrame.width - panelSize.width)
+        let y = visibleFrame.minY + normalizedY * max(0, visibleFrame.height - panelSize.height)
+        return clampedOrigin(
+            CGPoint(x: x, y: y),
+            panelSize: panelSize,
+            visibleFrame: visibleFrame
+        )
+    }
+}
+
+/// 独立 HUD 的状态源。窗口、位置记忆、拖动都在 `HudPanelCoordinator`；这里只管
+/// 「现在显示什么」和「HUD 开没开」。
+@MainActor
+final class HudCenter: ObservableObject {
+    static let shared = HudCenter()
+
+    @Published private(set) var card: HudCard?
+    @Published private(set) var lastCard: HudCard?
+    @Published private(set) var sessionCount = 0
+    @Published private(set) var isEnabled = true
+    @Published private(set) var copiedCardID: UUID?
+    @Published private(set) var strings: HudStrings?
+
+    /// 悬停或拖动时回调，让推卡片的业务方暂停自己的计时。
+    var onInteractionChange: (@MainActor (Bool) -> Void)?
+    /// 用户点了失败卡片上的「复制诊断」或 ×；由推卡片的业务方决定怎么处理。
+    var onCopyRequested: (@MainActor (HudCard) -> Void)?
+    var onCloseRequested: (@MainActor (HudCard) -> Void)?
+
+    func requestCopy(for card: HudCard?) {
+        guard let card else { return }
+        onCopyRequested?(card)
+    }
+
+    func requestClose(for card: HudCard?) {
+        guard let card else { return }
+        onCloseRequested?(card)
+    }
+
+    func configure(strings: HudStrings) {
+        self.strings = strings
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        guard enabled != isEnabled else { return }
+        isEnabled = enabled
+        if !enabled {
+            reset()
+        }
+    }
+
+    func present(_ card: HudCard) {
+        self.card = card
+        lastCard = card
+        sessionCount += 1
+    }
+
+    /// 卡片收起（例如成功提示到期），但 HUD 本身留在待命态。
+    func clearCard() {
+        card = nil
+        copiedCardID = nil
+    }
+
+    func reset() {
+        card = nil
+        lastCard = nil
+        sessionCount = 0
+        copiedCardID = nil
+    }
+
+    func markCopied(_ cardID: UUID?) {
+        copiedCardID = cardID
+    }
+
+    func setInteracting(_ interacting: Bool) {
+        onInteractionChange?(interacting)
+    }
+
+    func resetForTesting() {
+        reset()
+    }
+}

@@ -4,7 +4,7 @@ import SwiftUI
 /// 生产 HUD 视图的离屏证据渲染。
 ///
 /// 与设置/Onboarding 截图工具一致：只用于生成 PR 证据，不参与普通启动。
-/// 画面是生产 `ActionFeedbackView`，背后使用中性底色；真实浮层编号、非激活
+/// 画面是生产 `HudPanelView`，背后使用中性底色；真实浮层编号、非激活
 /// 行为和屏幕位置由单测与真机流程验证，不能用这张图替代。
 @MainActor
 enum ActionFeedbackScreenshotRenderer {
@@ -55,21 +55,28 @@ enum ActionFeedbackScreenshotRenderer {
                 (NSAppearance.Name.aqua, "light"),
                 (NSAppearance.Name.darkAqua, "dark"),
             ] {
-                for (kind, presentation) in try presentations(
-                    language: language,
-                    strings: strings
-                ) {
+                for state in try states(language: language, strings: strings) {
                     let view = ZStack {
                         appearanceSuffix == "light"
                             ? Color(hex: 0xF2F2F4)
                             : Color(hex: 0x1C1C1E)
-                        ActionFeedbackView(
-                            presentation: presentation,
+                        HudPanelView(
+                            card: state.card,
+                            lastCard: state.lastCard,
+                            sessionCount: state.sessionCount,
+                            strings: HudStrings(
+                                locale: strings.locale,
+                                idleStatus: strings.hudIdleStatus,
+                                attentionStatus: strings.hudAttentionStatus,
+                                sessionCountFormat: strings.hudSessionCountFormat
+                            ),
                             isCopied: false,
                             onAction: { _ in },
                             onCopy: {},
                             onClose: {},
-                            onHover: { _ in }
+                            onHover: { _ in },
+                            onDrag: { _ in },
+                            onDragEnd: {}
                         )
                     }
                     .frame(width: canvasSize.width, height: canvasSize.height)
@@ -103,7 +110,7 @@ enum ActionFeedbackScreenshotRenderer {
                     ) else {
                         throw RenderingError.pngCreationFailed
                     }
-                    let filename = "action-feedback-\(languageSuffix)-\(appearanceSuffix)-\(kind).png"
+                    let filename = "action-feedback-\(languageSuffix)-\(appearanceSuffix)-\(state.name).png"
                     try png.write(to: outputDirectory.appendingPathComponent(filename))
                     window.orderOut(nil)
                     window.contentView = nil
@@ -112,10 +119,10 @@ enum ActionFeedbackScreenshotRenderer {
         }
     }
 
-    private static func presentations(
+    private static func states(
         language: AppLanguage,
         strings: ActionFeedbackStrings
-    ) throws -> [(kind: String, presentation: ActionFeedbackPresentation)] {
+    ) throws -> [RenderState] {
         let successName = language == .simplifiedChinese ? "打开微信" : "Open WeChat"
         let failureName = language == .simplifiedChinese ? "发送到微信" : "Send to WeChat"
         let success = try presentation(
@@ -141,7 +148,37 @@ enum ActionFeedbackScreenshotRenderer {
             strings: strings,
             handlers: ActionFeedbackActionHandlers(retry: {})
         )
-        return [("success", success), ("failure", failure)]
+        func card(_ presentation: ActionFeedbackPresentation) -> HudCard {
+            ActionFeedbackCenter.hudCard(for: presentation, strings: strings) { _ in }
+        }
+        return [
+            RenderState(
+                name: "idle",
+                card: nil,
+                lastCard: card(success),
+                sessionCount: 4
+            ),
+            RenderState(
+                name: "success",
+                card: card(success),
+                lastCard: card(success),
+                sessionCount: 1
+            ),
+            RenderState(
+                name: "failure",
+                card: card(failure),
+                lastCard: card(failure),
+                sessionCount: 2
+            ),
+        ]
+    }
+
+    /// HUD 的一种状态：空闲（card 为 nil）、成功、失败。
+    private struct RenderState {
+        let name: String
+        let card: HudCard?
+        let lastCard: HudCard?
+        let sessionCount: Int
     }
 
     private static func presentation(
@@ -151,7 +188,6 @@ enum ActionFeedbackScreenshotRenderer {
     ) throws -> ActionFeedbackPresentation {
         let center = ActionFeedbackCenter(
             successDuration: 3_600,
-            failureDuration: 3_600,
             log: { _ in },
             pasteboardWriter: { _ in }
         )
