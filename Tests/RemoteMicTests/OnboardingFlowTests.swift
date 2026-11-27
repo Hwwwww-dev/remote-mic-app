@@ -1206,8 +1206,8 @@ struct OnboardingFlowTests {
         #expect(viewSource.contains("action: requestBluetoothPermission"))
         #expect(viewSource.contains("action: requestInputMonitoringPermission"))
         #expect(viewSource.contains("action: requestAccessibilityPermission"))
-        #expect(viewSource.contains("model.requestInputMonitoringPermission()"))
-        #expect(viewSource.contains("model.requestAccessibilityPermission()"))
+        #expect(viewSource.contains("model.requestInputMonitoringPermission(source: .onboarding)"))
+        #expect(viewSource.contains("model.requestAccessibilityPermission(source: .onboarding)"))
         #expect(viewSource.contains("if bluetoothAuthorization == .allowedAlways"))
         #expect(viewSource.contains("Privacy_Bluetooth"))
     }
@@ -4084,7 +4084,8 @@ struct OnboardingFlowTests {
 
         let welcome = try OnboardingOffscreenFixture(step: .welcome)
         defer { welcome.close() }
-        #expect(Set(welcome.probe.actions.keys) == ["continue"])
+        #expect(Set(welcome.probe.actions.keys) == ["community-help", "continue"])
+        invoke("community-help", on: welcome)
         invoke("continue", on: welcome)
         #expect(welcome.settings.onboardingStep == .remoteAvailability)
 
