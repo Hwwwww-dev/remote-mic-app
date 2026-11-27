@@ -64,11 +64,15 @@ enum ActionFeedbackScreenshotRenderer {
                             card: state.card,
                             lastCard: state.lastCard,
                             sessionCount: state.sessionCount,
+                            mode: state.mode,
+                            isRemoteConnected: state.isRemoteConnected,
                             strings: HudStrings(
                                 locale: strings.locale,
                                 idleStatus: strings.hudIdleStatus,
                                 attentionStatus: strings.hudAttentionStatus,
-                                sessionCountFormat: strings.hudSessionCountFormat
+                                sessionCountFormat: strings.hudSessionCountFormat,
+                                modeKeyboard: strings.hudModeKeyboard,
+                                modeMouse: strings.hudModeMouse
                             ),
                             isCopied: false,
                             onAction: { _ in },
@@ -156,19 +160,25 @@ enum ActionFeedbackScreenshotRenderer {
                 name: "idle",
                 card: nil,
                 lastCard: card(success),
-                sessionCount: 4
+                sessionCount: 4,
+                mode: .keyboard,
+                isRemoteConnected: true
             ),
             RenderState(
                 name: "success",
                 card: card(success),
                 lastCard: card(success),
-                sessionCount: 1
+                sessionCount: 1,
+                mode: .keyboard,
+                isRemoteConnected: true
             ),
             RenderState(
                 name: "failure",
                 card: card(failure),
                 lastCard: card(failure),
-                sessionCount: 2
+                sessionCount: 2,
+                mode: .mouse,
+                isRemoteConnected: false
             ),
         ]
     }
@@ -179,6 +189,8 @@ enum ActionFeedbackScreenshotRenderer {
         let card: HudCard?
         let lastCard: HudCard?
         let sessionCount: Int
+        let mode: HudMode
+        let isRemoteConnected: Bool
     }
 
     private static func presentation(

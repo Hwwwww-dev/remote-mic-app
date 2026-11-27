@@ -1,5 +1,13 @@
 # Version History
 
+## 2.0.10.2 (Pre-release)
+
+- Mouse mode: arrow keys move the pointer, OK clicks left, double-clicks right and long-presses Return; back or switch exits. Six buttons keep separate bindings per mode, with three-step speed, acceleration, double-click interval and long-press settings.
+- Seven mouse actions: left, right and middle click, plus 60-point moves up, down, left and right.
+- A persistent HUD: shows Idle / Needs attention with the session action count and the latest action with its elapsed time. Drag it anywhere, position is remembered per display, and it stays above the Dock and full-screen apps. Hovering or dragging pauses the countdown; failures stay until dismissed; can be turned off in Settings.
+- The HUD status row now shows Keyboard or Mouse mode (blue for keyboard, orange for mouse); the status dot turns green once any remote is connected and red when something needs attention.
+- Fixes: native arrow key leakage, a crash from an early-released HID callback, installs blocked by a group-writable HAL directory, silently dropped mic open/close commands, and the Siri Remote receipt left after uninstall. Long version numbers no longer wrap in the settings sidebar.
+
 ## 2.0.10 (Pre-release)
 
 - Adds Common Phrases: insert frequently used text in one press, with editing and import/export.

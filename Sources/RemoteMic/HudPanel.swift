@@ -8,6 +8,8 @@ struct HudPanelView: View {
     let card: HudCard?
     let lastCard: HudCard?
     let sessionCount: Int
+    let mode: HudMode
+    let isRemoteConnected: Bool
     let strings: HudStrings?
     let isCopied: Bool
     let onAction: (HudAction) -> Void
@@ -76,6 +78,12 @@ struct HudPanelView: View {
                 .foregroundStyle(.white.opacity(0.92))
                 .lineLimit(1)
             Spacer(minLength: 8)
+            if let modeText {
+                Text(modeText)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(modeColor)
+                    .lineLimit(1)
+            }
             if let countText {
                 Text(countText)
                     .font(.system(size: 12).monospacedDigit())
@@ -188,7 +196,19 @@ struct HudPanelView: View {
 
     private var statusColor: Color {
         if isFailure { return .red }
-        return card == nil ? .white.opacity(0.5) : .green
+        return isRemoteConnected ? .green : Color.white.opacity(0.42)
+    }
+
+    private var modeText: String? {
+        guard let strings else { return nil }
+        return mode == .mouse ? strings.modeMouse : strings.modeKeyboard
+    }
+
+    /// 模式用颜色区分：键盘模式蓝、鼠标模式橙。
+    private var modeColor: Color {
+        mode == .mouse
+            ? Color(red: 1.0, green: 0.62, blue: 0.29)
+            : Color(red: 0.45, green: 0.69, blue: 1.0)
     }
 
     private var countText: String? {
@@ -231,6 +251,8 @@ final class HudPanelCoordinator {
         let sessionCount: Int
         let isEnabled: Bool
         let copiedID: UUID?
+        let mode: HudMode
+        let isRemoteConnected: Bool
     }
 
     /// 内容指纹：只看会影响渲染的标识，相同就不重建 SwiftUI 树。
@@ -238,13 +260,17 @@ final class HudPanelCoordinator {
         card: HudCard?,
         lastCard: HudCard?,
         sessionCount: Int,
-        copiedID: UUID?
+        copiedID: UUID?,
+        mode: HudMode,
+        isRemoteConnected: Bool
     ) -> String {
         [
             String(sessionCount),
             card?.id.uuidString ?? "idle",
             lastCard?.id.uuidString ?? "none",
             copiedID?.uuidString ?? "",
+            mode == .mouse ? "mouse" : "keyboard",
+            isRemoteConnected ? "connected" : "offline",
         ].joined(separator: "|")
     }
 
@@ -264,15 +290,17 @@ final class HudPanelCoordinator {
             center.$sessionCount,
             center.$isEnabled
         )
-        .combineLatest(center.$copiedCardID)
+        .combineLatest(center.$copiedCardID, center.$mode, center.$isRemoteConnected)
         .receive(on: RunLoop.main)
-        .sink { [weak self] state, copiedID in
+        .sink { [weak self] state, copiedID, mode, isRemoteConnected in
             self?.render(
                 state.0,
                 lastCard: state.1,
                 sessionCount: state.2,
                 isEnabled: state.3,
-                copiedID: copiedID
+                copiedID: copiedID,
+                mode: mode,
+                isRemoteConnected: isRemoteConnected
             )
         }
     }
@@ -292,7 +320,9 @@ final class HudPanelCoordinator {
         lastCard: HudCard?,
         sessionCount: Int,
         isEnabled: Bool,
-        copiedID: UUID?
+        copiedID: UUID?,
+        mode: HudMode,
+        isRemoteConnected: Bool
     ) {
         guard isEnabled else {
             hidePanel()
@@ -306,7 +336,9 @@ final class HudPanelCoordinator {
                 lastCard: lastCard,
                 sessionCount: sessionCount,
                 isEnabled: isEnabled,
-                copiedID: copiedID
+                copiedID: copiedID,
+                mode: mode,
+                isRemoteConnected: isRemoteConnected
             )
             return
         }
@@ -314,7 +346,9 @@ final class HudPanelCoordinator {
             card: card,
             lastCard: lastCard,
             sessionCount: sessionCount,
-            copiedID: copiedID
+            copiedID: copiedID,
+            mode: mode,
+            isRemoteConnected: isRemoteConnected
         )
         // 指纹没变就什么都不做，避免重复重建 SwiftUI 树和重新测尺寸。
         if signature == renderedSignature, panel?.isVisible == true {
@@ -325,6 +359,8 @@ final class HudPanelCoordinator {
             card: card,
             lastCard: lastCard,
             sessionCount: sessionCount,
+            mode: mode,
+            isRemoteConnected: isRemoteConnected,
             strings: center.strings,
             isCopied: card != nil && copiedID == card?.id,
             onAction: { action in action.perform() },
@@ -554,7 +590,9 @@ final class HudPanelCoordinator {
                 lastCard: pending.lastCard,
                 sessionCount: pending.sessionCount,
                 isEnabled: pending.isEnabled,
-                copiedID: pending.copiedID
+                copiedID: pending.copiedID,
+                mode: pending.mode,
+                isRemoteConnected: pending.isRemoteConnected
             )
         }
     }

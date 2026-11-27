@@ -175,6 +175,8 @@ struct ActionFeedbackStrings: Sendable {
     let hudIdleStatus: String
     let hudAttentionStatus: String
     let hudSessionCountFormat: String
+    let hudModeKeyboard: String
+    let hudModeMouse: String
 
     init(localization: LocalizationStore) {
         locale = localization.locale
@@ -209,6 +211,8 @@ struct ActionFeedbackStrings: Sendable {
         hudIdleStatus = text("action_feedback.hud.status.idle")
         hudAttentionStatus = text("action_feedback.hud.status.attention")
         hudSessionCountFormat = text("action_feedback.hud.session_count")
+        hudModeKeyboard = text("action_feedback.hud.mode.keyboard")
+        hudModeMouse = text("action_feedback.hud.mode.mouse")
     }
 
     func format(_ template: String, _ arguments: String...) -> String {
@@ -707,7 +711,9 @@ final class ActionFeedbackCenter: ObservableObject {
                 locale: strings.locale,
                 idleStatus: strings.hudIdleStatus,
                 attentionStatus: strings.hudAttentionStatus,
-                sessionCountFormat: strings.hudSessionCountFormat
+                sessionCountFormat: strings.hudSessionCountFormat,
+                modeKeyboard: strings.hudModeKeyboard,
+                modeMouse: strings.hudModeMouse
             )
         )
         HudCenter.shared.present(

@@ -10,6 +10,12 @@ enum HudTone: Equatable, Sendable {
     case failure
 }
 
+/// 遥控器当前处在哪种模式：只影响状态行那段文字的颜色，不参与任何动作判断。
+enum HudMode: Equatable, Sendable {
+    case keyboard
+    case mouse
+}
+
 struct HudAction {
     let title: String
     let isProminent: Bool
@@ -65,25 +71,33 @@ struct HudStrings: Sendable {
     let idleStatus: String
     let attentionStatus: String
     let sessionCountFormat: String
+    let modeKeyboard: String
+    let modeMouse: String
 
     init(localization: LocalizationStore) {
         locale = localization.locale
         idleStatus = localization.text("action_feedback.hud.status.idle")
         attentionStatus = localization.text("action_feedback.hud.status.attention")
         sessionCountFormat = localization.text("action_feedback.hud.session_count")
+        modeKeyboard = localization.text("action_feedback.hud.mode.keyboard")
+        modeMouse = localization.text("action_feedback.hud.mode.mouse")
     }
 
-    /// 从已经构建好的动作反馈文案里取 HUD 需要的三条，避免重复读本地化表。
+    /// 从已经构建好的动作反馈文案里取 HUD 需要的几条，避免重复读本地化表。
     init(
         locale: Locale,
         idleStatus: String,
         attentionStatus: String,
-        sessionCountFormat: String
+        sessionCountFormat: String,
+        modeKeyboard: String,
+        modeMouse: String
     ) {
         self.locale = locale
         self.idleStatus = idleStatus
         self.attentionStatus = attentionStatus
         self.sessionCountFormat = sessionCountFormat
+        self.modeKeyboard = modeKeyboard
+        self.modeMouse = modeMouse
     }
 
     func format(_ template: String, _ arguments: String...) -> String {
@@ -175,6 +189,10 @@ final class HudCenter: ObservableObject {
     @Published private(set) var isEnabled = true
     @Published private(set) var copiedCardID: UUID?
     @Published private(set) var strings: HudStrings?
+    /// 遥控器当前模式，只用于状态行文字与配色。
+    @Published private(set) var mode: HudMode = .keyboard
+    /// 是否至少有一路遥控连接（遥控器本体 / 手机 / 手表），决定状态点的颜色。
+    @Published private(set) var isRemoteConnected = false
 
     /// 悬停或拖动时回调，让推卡片的业务方暂停自己的计时。
     var onInteractionChange: (@MainActor (Bool) -> Void)?
@@ -202,6 +220,16 @@ final class HudCenter: ObservableObject {
         if !enabled {
             reset()
         }
+    }
+
+    func setMode(_ mode: HudMode) {
+        guard mode != self.mode else { return }
+        self.mode = mode
+    }
+
+    func setRemoteConnected(_ connected: Bool) {
+        guard connected != isRemoteConnected else { return }
+        isRemoteConnected = connected
     }
 
     func present(_ card: HudCard) {

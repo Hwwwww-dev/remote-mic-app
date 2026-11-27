@@ -1694,6 +1694,8 @@
 "action_feedback.hud.status.idle" = "Idle";
 "action_feedback.hud.status.attention" = "Needs attention";
 "action_feedback.hud.session_count" = "This session %@";
+"action_feedback.hud.mode.keyboard" = "Keyboard";
+"action_feedback.hud.mode.mouse" = "Mouse";
 "action_feedback.failure.title" = "“%@” didn’t run";
 "action_feedback.timeout.title" = "“%@” timed out";
 "action_feedback.timeout.context" = "Took longer than 10 seconds";

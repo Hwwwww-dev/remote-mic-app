@@ -189,6 +189,22 @@ enum SettingsPageBehavior {
             .max() ?? 0
     }
 
+    /// 版本号用 `.monospacedDigit()` 显示，必须按等宽数字字体测量，
+    /// 否则 2.0.10.1 这类长版本号会低估宽度、被挤成两行。
+    static func sidebarMonospacedTextWidth(
+        _ text: String,
+        size: CGFloat,
+        weight: NSFont.Weight = .regular
+    ) -> CGFloat {
+        let font = NSFont.monospacedDigitSystemFont(ofSize: size, weight: weight)
+        let width = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { ($0 as NSString).size(withAttributes: [.font: font]).width }
+            .max() ?? 0
+        // 留 2pt 余量：SwiftUI 排版比 NSString.size 略宽，正好卡住就会折行。
+        return width.rounded(.up) + 2
+    }
+
     /// 侧边栏页头使用品牌字体（Oxanium），宽度必须按同一字体测量，否则会低估。
     static func sidebarHeaderTextWidth(_ text: String) -> CGFloat {
         let font = NSFont(name: "Oxanium-SemiBold", size: sidebarHeaderTitleFontSize)
@@ -1038,7 +1054,7 @@ struct SettingsView: View {
         }
         return SettingsPageBehavior.sidebarWidth(
             headerTitleWidth: SettingsPageBehavior.sidebarHeaderTextWidth("SayAll"),
-            headerVersionWidth: SettingsPageBehavior.sidebarTextWidth(
+            headerVersionWidth: SettingsPageBehavior.sidebarMonospacedTextWidth(
                 currentVersion,
                 size: SettingsPageBehavior.sidebarHeaderVersionFontSize,
                 weight: .regular
@@ -1085,6 +1101,9 @@ struct SettingsView: View {
                         .font(.system(size: SettingsPageBehavior.sidebarHeaderVersionFontSize))
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
+                        // 版本号必须单行：2.0.10.1 这种长版本被侧栏宽度挤成两行会很难看。
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
                 .padding(.top, 6)
             }

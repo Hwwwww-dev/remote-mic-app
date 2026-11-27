@@ -1253,8 +1253,29 @@ private final class RemoteMicAppDelegate: NSObject, NSApplicationDelegate, NSMen
         // HUD 是独立功能：自己的开关决定它开不开机就常显，动作反馈只是它的一个内容来源。
         HudCenter.shared.configure(strings: HudStrings(localization: localization))
         HudCenter.shared.setEnabled(model.settings.showHud)
+        bindHudStatus()
         hudPanel.start()
         showActionFeedbackPreviewIfRequested()
+    }
+
+    /// 状态行的模式文字与连接点：只读模型状态，不反过来影响遥控逻辑。
+    private func bindHudStatus() {
+        HudCenter.shared.setMode(model.isMouseModeActive ? .mouse : .keyboard)
+        HudCenter.shared.setRemoteConnected(
+            model.isConnected || model.isPhoneRemoteConnected || model.isWatchRemoteConnected
+        )
+        Publishers.CombineLatest4(
+            model.$isMouseModeActive,
+            model.$isConnected,
+            model.$isPhoneRemoteConnected,
+            model.$isWatchRemoteConnected
+        )
+        .receive(on: RunLoop.main)
+        .sink { isMouseMode, connected, phoneConnected, watchConnected in
+            HudCenter.shared.setMode(isMouseMode ? .mouse : .keyboard)
+            HudCenter.shared.setRemoteConnected(connected || phoneConnected || watchConnected)
+        }
+        .store(in: &subscriptions)
     }
 
     private func showActionFeedbackPreviewIfRequested() {
