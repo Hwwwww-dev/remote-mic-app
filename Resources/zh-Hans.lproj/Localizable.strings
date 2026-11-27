@@ -1695,7 +1695,7 @@
 "action_feedback.hud.session_count" = "本次 %@";
 "action_feedback.hud.mode.keyboard" = "键盘模式";
 "action_feedback.hud.mode.mouse" = "鼠标模式";
-"action_feedback.failure.title" = "「%@」未执行";
+"action_feedback.failure.title" = "「%@」执行失败";
 "action_feedback.timeout.title" = "「%@」超时";
 "action_feedback.timeout.context" = "超过 10 秒";
 "action_feedback.timeout.detail" = "目标 App 没有在限定时间内响应。可以重试，或检查 App 是否卡住。";

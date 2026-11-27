@@ -1,5 +1,11 @@
 # Version History
 
+## 2.0.10.3 (Pre-release)
+
+- The HUD is now a three-row history list: newest results appear on top, merges into "Ran N actions" are gone, and the oldest row is dropped past three.
+- Failure rows are a single line, "“Action” failed to run", without the explanatory text; only Retry and Copy diagnostics remain. Only the newest failure is listed, and closing it returns to the history list.
+- While a failure is unhandled, later successes still append below it instead of being suppressed.
+
 ## 2.0.10.2 (Pre-release)
 
 - Mouse mode: arrow keys move the pointer, OK clicks left, double-clicks right and long-presses Return; back or switch exits. Six buttons keep separate bindings per mode, with three-step speed, acceleration, double-click interval and long-press settings.

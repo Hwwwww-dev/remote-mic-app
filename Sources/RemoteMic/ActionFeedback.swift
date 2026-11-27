@@ -283,6 +283,8 @@ final class ActionFeedbackCenter: ObservableObject {
         let at: Date
     }
 
+    /// HUD 只在显示层存在；测试用独立实例，避免多个用例并行写同一个单例。
+    private let hud: HudCenter
     private let now: () -> Date
     private let successDuration: TimeInterval
     private let mergeWindow: TimeInterval
@@ -303,6 +305,7 @@ final class ActionFeedbackCenter: ObservableObject {
     private var standardHandlers: [ActionFeedbackAction: @MainActor () -> Void] = [:]
 
     init(
+        hud: HudCenter = .shared,
         now: @escaping () -> Date = Date.init,
         successDuration: TimeInterval = 1.3,
         mergeWindow: TimeInterval = 2,
@@ -314,6 +317,7 @@ final class ActionFeedbackCenter: ObservableObject {
             pasteboard.setString(text, forType: .string)
         }
     ) {
+        self.hud = hud
         self.now = now
         self.successDuration = successDuration
         self.mergeWindow = mergeWindow
@@ -321,13 +325,13 @@ final class ActionFeedbackCenter: ObservableObject {
         self.log = log
         self.pasteboardWriter = pasteboardWriter
         // HUD 是独立的一层：它只管显示和交互，这里把用户的动作接回业务侧。
-        HudCenter.shared.onInteractionChange = { [weak self] interacting in
+        hud.onInteractionChange = { [weak self] interacting in
             self?.setHovering(interacting)
         }
-        HudCenter.shared.onCopyRequested = { [weak self] _ in
+        hud.onCopyRequested = { [weak self] _ in
             self?.copyDiagnostics()
         }
-        HudCenter.shared.onCloseRequested = { [weak self] _ in
+        hud.onCloseRequested = { [weak self] _ in
             self?.dismiss()
         }
     }
@@ -362,49 +366,32 @@ final class ActionFeedbackCenter: ObservableObject {
                 state = "disabled_success"
                 break
             }
-            if presentation?.kind == .failure {
-                state = "suppressed_by_failure"
-                break
-            }
-            let merged = mergedSuccess(event: event, at: timestamp)
-            count = merged.count
+            // 成功不再合并成「已执行 N 个动作」：每次执行都往 HUD 推一行，
+            // 由 HUD 自己保留最近三行。失败卡片照常留在最上面，不被成功顶掉。
             let newPresentation = makeSuccessPresentation(
                 event: event,
-                count: merged.count,
-                multipleActions: merged.multipleActions,
+                count: 1,
+                multipleActions: false,
                 strings: strings
             )
-            install(
-                newPresentation,
-                handlers: handlers,
-                duration: successDuration,
-                at: timestamp,
-                strings: strings
-            )
-            lastPresented = LastPresented(
-                kind: .success,
-                actionID: event.actionID,
-                actionName: event.actionName,
-                failureKind: nil,
-                timedOut: false,
-                multipleActions: merged.multipleActions,
-                count: merged.count,
-                at: timestamp
-            )
-            state = merged.count > 1 ? "merged" : "shown"
+            lastPresentation = newPresentation
+            lastEventAt = timestamp
+            sessionCount += 1
+            pushToHud(newPresentation, strings: strings)
+            state = "shown"
 
         case .timedOut, .failure:
             if !event.presentsFailure {
                 state = "disabled_failure"
                 break
             }
-            let mergedCount = mergedFailure(event: event, at: timestamp)
+            // 多个失败只留最新一条，同样不进合并计数。
+            let mergedCount = 1
             count = mergedCount
-            let visibleBefore = presentation != nil
             let newPresentation = makeFailurePresentation(
                 event: event,
                 count: mergedCount,
-                announces: mergedCount == 1 || !visibleBefore,
+                announces: true,
                 strings: strings,
                 handlers: handlers
             )
@@ -425,7 +412,7 @@ final class ActionFeedbackCenter: ObservableObject {
                 count: mergedCount,
                 at: timestamp
             )
-            state = mergedCount > 1 ? "merged" : "shown"
+            state = "shown"
         }
 
         log(
@@ -476,7 +463,7 @@ final class ActionFeedbackCenter: ObservableObject {
         else { return }
         pasteboardWriter(diagnostics)
         copiedPresentationID = presentation.id
-        HudCenter.shared.markCopied(presentation.id)
+        hud.markCopied(presentation.id)
         copyResetTask?.cancel()
         let presentationID = presentation.id
         let resetNanoseconds = UInt64(max(0, copiedDuration) * 1_000_000_000)
@@ -485,7 +472,7 @@ final class ActionFeedbackCenter: ObservableObject {
             guard !Task.isCancelled else { return }
             guard let self, self.copiedPresentationID == presentationID else { return }
             self.copiedPresentationID = nil
-            HudCenter.shared.markCopied(nil)
+            hud.markCopied(nil)
         }
         log(
             "ACTION FEEDBACK operation_id=\(presentation.operationID) " +
@@ -518,13 +505,13 @@ final class ActionFeedbackCenter: ObservableObject {
         copiedPresentationID = nil
         eventHandlers = [:]
         // HUD 留在待命态，只把这张卡撤掉。
-        HudCenter.shared.clearCard()
+        hud.clearCard()
     }
 
     /// 关闭全部反馈（设置里关掉开关时调用），连同常显面板的“最近一条”一起清空。
     func reset() {
         dismiss()
-        HudCenter.shared.reset()
+        hud.reset()
         lastPresentation = nil
         lastEventAt = nil
         sessionCount = 0
@@ -654,8 +641,10 @@ final class ActionFeedbackCenter: ObservableObject {
             kind: .failure,
             operationID: event.operationID,
             title: title,
-            context: fullContext,
-            detail: detail,
+            // 面板只显示一行标题：上下文和详情仍然进辅助功能播报与诊断文本，
+            // 但不再占版面。
+            context: nil,
+            detail: nil,
             action: action,
             actionTitle: actionTitle,
             copyTitle: strings.copyDiagnosticsTitle,
@@ -706,7 +695,15 @@ final class ActionFeedbackCenter: ObservableObject {
             // nil 表示不自动消失（失败停在面板里等用户处理）。
             remainingDismissal = duration
         }
-        HudCenter.shared.configure(
+        pushToHud(presentation, strings: strings)
+    }
+
+    /// 把一条结果推到 HUD。成功只占一行历史；失败会带着按钮停在面板上。
+    private func pushToHud(
+        _ presentation: ActionFeedbackPresentation,
+        strings: ActionFeedbackStrings
+    ) {
+        hud.configure(
             strings: HudStrings(
                 locale: strings.locale,
                 idleStatus: strings.hudIdleStatus,
@@ -716,7 +713,7 @@ final class ActionFeedbackCenter: ObservableObject {
                 modeMouse: strings.hudModeMouse
             )
         )
-        HudCenter.shared.present(
+        hud.present(
             Self.hudCard(for: presentation, strings: strings) { [weak self] action in
                 self?.perform(action)
             }

@@ -6,7 +6,7 @@ import SwiftUI
 /// HUD 的视图。只认 `HudCard`，不认任何业务类型：换一个功能推卡片，外观不变。
 struct HudPanelView: View {
     let card: HudCard?
-    let lastCard: HudCard?
+    let rows: [HudRow]
     let sessionCount: Int
     let mode: HudMode
     let isRemoteConnected: Bool
@@ -28,24 +28,9 @@ struct HudPanelView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             statusRow
-            if let active = card {
+            if !rows.isEmpty {
                 divider
-                if active.tone == .failure {
-                    failureBody(active)
-                } else {
-                    detailRow(
-                        title: active.title,
-                        elapsed: active.elapsedMilliseconds ?? 0,
-                        live: true
-                    )
-                }
-            } else if let last = lastCard {
-                divider
-                detailRow(
-                    title: last.title,
-                    elapsed: last.elapsedMilliseconds ?? 0,
-                    live: false
-                )
+                rowsBody
             }
         }
         .padding(.horizontal, 14)
@@ -99,54 +84,14 @@ struct HudPanelView: View {
             .padding(.vertical, 8)
     }
 
-    private func detailRow(title: String, elapsed: Int, live: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(title)
-                .font(.system(size: 13, weight: live ? .medium : .regular))
-                .foregroundStyle(live ? Color.white.opacity(0.95) : Color.white.opacity(0.62))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 4)
-            Text(elapsedText(elapsed))
-                .font(.system(size: 12).monospacedDigit())
-                .foregroundStyle(.white.opacity(0.5))
-        }
-    }
-
-    private func failureBody(_ active: HudCard) -> some View {
+    /// 最多三行，最后一行失败固定在最上面，下面是最近的成功行。
+    private var rowsBody: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(active.title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 4)
-                Text(elapsedText(active.elapsedMilliseconds ?? 0))
-                    .font(.system(size: 12).monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.5))
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.6))
-                        .frame(width: 16, height: 16)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(active.closeLabel)
+            ForEach(rows) { row in
+                rowView(row)
             }
-            if let context = active.context {
-                Text(context)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.white.opacity(0.62))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if let detail = active.detail {
-                Text(detail)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.white.opacity(0.62))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if active.primaryAction != nil || active.secondaryAction != nil {
+            if let active = card,
+               active.primaryAction != nil || active.secondaryAction != nil {
                 HStack(spacing: 8) {
                     if let action = active.primaryAction {
                         hudButton(action.title, prominent: action.isProminent) {
@@ -162,6 +107,35 @@ struct HudPanelView: View {
                     }
                 }
                 .padding(.top, 2)
+            }
+        }
+    }
+
+    /// 一行只显示动作名和耗时。未关闭的失败行加粗并带 ×，其余行是历史记录。
+    private func rowView(_ row: HudRow) -> some View {
+        let isOpenFailure = card?.id == row.id
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(row.title)
+                .font(.system(size: 13, weight: isOpenFailure ? .semibold : .regular))
+                .foregroundStyle(
+                    isOpenFailure ? Color.white.opacity(0.95) : Color.white.opacity(0.72)
+                )
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 4)
+            Text(elapsedText(row.elapsedMilliseconds ?? 0))
+                .font(.system(size: 12).monospacedDigit())
+                .foregroundStyle(.white.opacity(0.5))
+            if isOpenFailure {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(card?.closeLabel ?? "")
             }
         }
     }
@@ -247,7 +221,7 @@ final class HudPanelCoordinator {
 
     private struct RenderInput {
         let card: HudCard?
-        let lastCard: HudCard?
+        let rows: [HudRow]
         let sessionCount: Int
         let isEnabled: Bool
         let copiedID: UUID?
@@ -258,7 +232,7 @@ final class HudPanelCoordinator {
     /// 内容指纹：只看会影响渲染的标识，相同就不重建 SwiftUI 树。
     private static func signature(
         card: HudCard?,
-        lastCard: HudCard?,
+        rows: [HudRow],
         sessionCount: Int,
         copiedID: UUID?,
         mode: HudMode,
@@ -266,8 +240,8 @@ final class HudPanelCoordinator {
     ) -> String {
         [
             String(sessionCount),
-            card?.id.uuidString ?? "idle",
-            lastCard?.id.uuidString ?? "none",
+            card?.id.uuidString ?? "cleared",
+            rows.map(\.id.uuidString).joined(separator: ","),
             copiedID?.uuidString ?? "",
             mode == .mouse ? "mouse" : "keyboard",
             isRemoteConnected ? "connected" : "offline",
@@ -286,7 +260,7 @@ final class HudPanelCoordinator {
         guard cancellable == nil else { return }
         cancellable = Publishers.CombineLatest4(
             center.$card,
-            center.$lastCard,
+            center.$rows,
             center.$sessionCount,
             center.$isEnabled
         )
@@ -295,7 +269,7 @@ final class HudPanelCoordinator {
         .sink { [weak self] state, copiedID, mode, isRemoteConnected in
             self?.render(
                 state.0,
-                lastCard: state.1,
+                rows: state.1,
                 sessionCount: state.2,
                 isEnabled: state.3,
                 copiedID: copiedID,
@@ -317,7 +291,7 @@ final class HudPanelCoordinator {
     /// HUD 常显：开关打开就一直挂着；没有卡片时只显示状态行和最近一条。
     private func render(
         _ card: HudCard?,
-        lastCard: HudCard?,
+        rows: [HudRow],
         sessionCount: Int,
         isEnabled: Bool,
         copiedID: UUID?,
@@ -333,7 +307,7 @@ final class HudPanelCoordinator {
         if dragSnapshot != nil {
             pendingRender = RenderInput(
                 card: card,
-                lastCard: lastCard,
+                rows: rows,
                 sessionCount: sessionCount,
                 isEnabled: isEnabled,
                 copiedID: copiedID,
@@ -344,7 +318,7 @@ final class HudPanelCoordinator {
         }
         let signature = Self.signature(
             card: card,
-            lastCard: lastCard,
+            rows: rows,
             sessionCount: sessionCount,
             copiedID: copiedID,
             mode: mode,
@@ -357,7 +331,7 @@ final class HudPanelCoordinator {
         let host = ensureHostingView()
         let view = HudPanelView(
             card: card,
-            lastCard: lastCard,
+            rows: rows,
             sessionCount: sessionCount,
             mode: mode,
             isRemoteConnected: isRemoteConnected,
@@ -587,7 +561,7 @@ final class HudPanelCoordinator {
             pendingRender = nil
             render(
                 pending.card,
-                lastCard: pending.lastCard,
+                rows: pending.rows,
                 sessionCount: pending.sessionCount,
                 isEnabled: pending.isEnabled,
                 copiedID: pending.copiedID,

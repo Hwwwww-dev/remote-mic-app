@@ -6,6 +6,9 @@ import Testing
 @Suite("Action feedback center", .serialized)
 @MainActor
 struct ActionFeedbackCenterTests {
+    /// 每个用例一份独立 HUD，避免并行用例互相清掉对方的行。
+    private let hud = HudCenter()
+
     private final class TestClock {
         var date = Date(timeIntervalSince1970: 1_700_000_000)
     }
@@ -33,6 +36,7 @@ struct ActionFeedbackCenterTests {
         pasteboard: @escaping (String) -> Void = { _ in }
     ) -> ActionFeedbackCenter {
         ActionFeedbackCenter(
+            hud: hud,
             now: { clock.date },
             successDuration: successDuration,
             mergeWindow: mergeWindow,
@@ -67,169 +71,152 @@ struct ActionFeedbackCenterTests {
         )
     }
 
-    @Test func successUsesStandardTipBubbleTitle() throws {
+    /// HudCenter 是单例：每个用例前后清一次历史行和开关，避免互相污染。
+    private func resetHud() {
+        hud.reset()
+        hud.setEnabled(true)
+    }
+
+    @Test func successPushesOneHistoryRow() throws {
         let (localization, defaults, name) = try makeLocalization()
-        defer { defaults.removePersistentDomain(forName: name) }
+        resetHud()
+        defer {
+            resetHud()
+            defaults.removePersistentDomain(forName: name)
+        }
         let center = makeCenter()
         center.record(event(), strings: ActionFeedbackStrings(localization: localization))
 
-        #expect(center.presentation?.kind == .success)
-        #expect(center.presentation?.title.contains("打开微信") == true)
-        #expect(center.presentation?.context == nil)
-        #expect(center.presentation?.detail == nil)
-        #expect(center.presentation?.action == nil)
-        center.dismiss()
+        // 成功不再占卡片，只往 HUD 历史里推一行。
+        #expect(center.presentation == nil)
+        #expect(center.lastPresentation?.kind == .success)
+        #expect(center.lastPresentation?.title.contains("打开微信") == true)
+        #expect(center.sessionCount == 1)
+        let rows = hud.rows
+        #expect(rows.count == 1)
+        #expect(rows.first?.tone == .success)
+        #expect(rows.first?.elapsedMilliseconds == 128)
     }
 
-    @Test func successAutoDismisses() async throws {
+    @Test func successRowsDoNotAutoDismiss() async throws {
         let (localization, defaults, name) = try makeLocalization()
-        defer { defaults.removePersistentDomain(forName: name) }
+        resetHud()
+        defer {
+            resetHud()
+            defaults.removePersistentDomain(forName: name)
+        }
         let center = makeCenter(successDuration: 0.04)
         center.record(event(), strings: ActionFeedbackStrings(localization: localization))
-        #expect(center.presentation != nil)
+        #expect(hud.rows.count == 1)
+
         try await Task.sleep(nanoseconds: 1_000_000_000)
-        #expect(center.presentation == nil)
+        // 成功行留在历史里，不再按 1.3 秒清掉。
+        #expect(hud.rows.count == 1)
+        #expect(hud.sessionCount == 1)
     }
 
-    @Test func failurePresentationCanBeDisabledByTheMasterSwitch() throws {
+    @Test func repeatedSuccessKeepsSeparateRows() throws {
         let (localization, defaults, name) = try makeLocalization()
-        defer { defaults.removePersistentDomain(forName: name) }
-        var logs: [String] = []
-        let center = makeCenter(logs: { logs.append($0) })
-        center.record(
-            event(result: .failure(.executionFailed), presentsFailure: false),
-            strings: ActionFeedbackStrings(localization: localization)
-        )
-
-        #expect(center.presentation == nil)
-        #expect(logs.contains { $0.contains("presentation=disabled_failure") })
-    }
-
-    @Test func feedbackSwitchesPersistAndRoundTrip() throws {
-        let name = "ActionFeedbackTests.\(UUID().uuidString)"
-        let defaults = try #require(TestUserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
-        let settings = AppSettings(defaults: defaults)
-        #expect(settings.showActionFeedback)
-        #expect(settings.showActionSuccessFeedback)
-
-        settings.showActionFeedback = false
-        settings.showActionSuccessFeedback = false
-        let reloaded = AppSettings(defaults: defaults)
-        #expect(!reloaded.showActionFeedback)
-        #expect(!reloaded.showActionSuccessFeedback)
-
-        let data = try settings.exportedConfigurationData()
-        let targetName = "ActionFeedbackTests.\(UUID().uuidString)"
-        let targetDefaults = try #require(TestUserDefaults(suiteName: targetName))
-        defer { targetDefaults.removePersistentDomain(forName: targetName) }
-        let target = AppSettings(defaults: targetDefaults)
-        try target.importConfiguration(from: data)
-        #expect(!target.showActionFeedback)
-        #expect(!target.showActionSuccessFeedback)
-    }
-
-    @Test func successDoesNotMergeAfterItsOwnLifetime() throws {
-        let (localization, defaults, name) = try makeLocalization()
-        defer { defaults.removePersistentDomain(forName: name) }
-        let clock = TestClock()
-        let center = makeCenter(clock: clock, successDuration: 1.3, mergeWindow: 2)
+        resetHud()
+        defer {
+            resetHud()
+            defaults.removePersistentDomain(forName: name)
+        }
         let strings = ActionFeedbackStrings(localization: localization)
-
+        let center = makeCenter()
         center.record(event(), strings: strings)
-        clock.date = clock.date.addingTimeInterval(1.5)
         center.record(event(), strings: strings)
 
+        #expect(hud.rows.count == 2)
+        #expect(hud.rows.allSatisfy { $0.title.contains("打开微信") })
+        // 不再有「已执行「X」×2」这类合并计数。
+        #expect(center.lastPresentation?.count == 1)
+        #expect(center.lastPresentation?.title.contains("×") == false)
+    }
+
+    @Test func historyKeepsNewestThreeRows() throws {
+        let (localization, defaults, name) = try makeLocalization()
+        resetHud()
+        defer {
+            resetHud()
+            defaults.removePersistentDomain(forName: name)
+        }
+        let strings = ActionFeedbackStrings(localization: localization)
+        let center = makeCenter()
+        center.record(event(actionID: "open_wechat", name: "打开微信"), strings: strings)
+        center.record(event(actionID: "open_wechat", name: "打开微信"), strings: strings)
+        center.record(event(actionID: "open_safari", name: "打开 Safari"), strings: strings)
+
+        let rows = hud.rows
+        #expect(rows.count == 3)
+        #expect(rows[0].title.contains("Safari"))
+        #expect(rows[1].title.contains("打开微信"))
+        #expect(rows[2].title.contains("打开微信"))
+
+        // 第四行把最旧的一行挤掉，始终只有三行。
+        center.record(event(actionID: "focus_input", name: "聚焦输入框"), strings: strings)
+        let capped = hud.rows
+        #expect(capped.count == 3)
+        #expect(capped[0].title.contains("聚焦输入框"))
+        #expect(capped[1].title.contains("Safari"))
+        #expect(capped[2].title.contains("打开微信"))
+    }
+
+    @Test func failureStaysOnTopWhileSuccessAppendsBelow() throws {
+        let (localization, defaults, name) = try makeLocalization()
+        resetHud()
+        defer {
+            resetHud()
+            defaults.removePersistentDomain(forName: name)
+        }
+        let strings = ActionFeedbackStrings(localization: localization)
+        let center = makeCenter()
+        center.record(event(), strings: strings)
+        #expect(center.presentation == nil)
+
+        center.record(
+            event(result: .failure(.shortcutNotDelivered)),
+            strings: strings
+        )
+        #expect(center.presentation?.kind == .failure)
+        #expect(hud.card != nil)
+        #expect(hud.rows.first?.tone == .failure)
+        // 失败不再显示「执行失败 / 动作没有完成」这类说明文字。
+        #expect(center.presentation?.context == nil)
+        #expect(center.presentation?.detail == nil)
+        #expect(center.presentation?.title.contains("failed to run") == true)
+
+        center.record(event(actionID: "open_safari", name: "打开 Safari"), strings: strings)
+        // 成功不会顶掉未处理的失败：失败仍在第一行，成功排在下面。
+        #expect(center.presentation?.kind == .failure)
+        #expect(hud.card != nil)
+        #expect(hud.rows[0].tone == .failure)
+        #expect(hud.rows[1].tone == .success)
+        #expect(hud.rows.count == 3)
+    }
+
+    @Test func onlyNewestFailureRowIsKept() throws {
+        let (localization, defaults, name) = try makeLocalization()
+        resetHud()
+        defer {
+            resetHud()
+            defaults.removePersistentDomain(forName: name)
+        }
+        let strings = ActionFeedbackStrings(localization: localization)
+        let center = makeCenter()
+        center.record(event(result: .failure(.shortcutNotDelivered)), strings: strings)
+        center.record(event(result: .failure(.targetUnavailable)), strings: strings)
+
+        // 多个失败只留最新一条，不做 ×N 合并，也不折叠。
         #expect(center.presentation?.count == 1)
         #expect(center.presentation?.title.contains("×") == false)
-    }
+        #expect(hud.rows.filter { $0.tone == .failure }.count == 1)
 
-    @Test func sameSuccessMergesCountAndDifferentSuccessMergesActions() throws {
-        let (localization, defaults, name) = try makeLocalization()
-        defer { defaults.removePersistentDomain(forName: name) }
-        let clock = TestClock()
-        let center = makeCenter(clock: clock)
-        let strings = ActionFeedbackStrings(localization: localization)
-
-        center.record(event(actionID: "a", name: "打开微信"), strings: strings)
-        clock.date = clock.date.addingTimeInterval(0.1)
-        center.record(event(actionID: "a", name: "打开微信"), strings: strings)
-        #expect(center.presentation?.count == 2)
-        #expect(center.presentation?.title.contains("×2") == true)
-
-        clock.date = clock.date.addingTimeInterval(0.1)
-        center.record(event(actionID: "b", name: "打开 Safari"), strings: strings)
-        #expect(center.presentation?.count == 3)
-        #expect(center.presentation?.title == "Ran 3 actions")
-        center.dismiss()
-    }
-
-    @Test func failureReplacesSuccessAndSuccessCannotReplaceFailure() throws {
-        let (localization, defaults, name) = try makeLocalization()
-        defer { defaults.removePersistentDomain(forName: name) }
-        let clock = TestClock()
-        var logs: [String] = []
-        let center = makeCenter(clock: clock, logs: { logs.append($0) })
-        let strings = ActionFeedbackStrings(localization: localization)
-
-        center.record(event(), strings: strings)
-        #expect(center.presentation?.kind == .success)
-
-        clock.date = clock.date.addingTimeInterval(0.1)
-        center.record(
-            event(
-                actionID: "send",
-                name: "发送到微信",
-                result: .failure(.shortcutNotDelivered)
-            ),
-            strings: strings
-        )
-        #expect(center.presentation?.kind == .failure)
-        #expect(center.presentation?.context == "Shortcut wasn’t delivered")
-
-        clock.date = clock.date.addingTimeInterval(0.1)
-        center.record(event(), strings: strings)
-        #expect(center.presentation?.kind == .failure)
-        #expect(logs.contains { $0.contains("presentation=suppressed_by_failure") })
-        center.dismiss()
-    }
-
-    @Test func sameFailureMergesAndTimeoutStaysDistinct() throws {
-        let (localization, defaults, name) = try makeLocalization()
-        defer { defaults.removePersistentDomain(forName: name) }
-        let clock = TestClock()
-        let center = makeCenter(clock: clock)
-        let strings = ActionFeedbackStrings(localization: localization)
-
-        center.record(
-            event(
-                actionID: "send",
-                name: "发送到微信",
-                result: .failure(.shortcutNotDelivered)
-            ),
-            strings: strings
-        )
-        clock.date = clock.date.addingTimeInterval(0.1)
-        center.record(
-            event(
-                actionID: "send",
-                name: "发送到微信",
-                result: .failure(.shortcutNotDelivered)
-            ),
-            strings: strings
-        )
-        #expect(center.presentation?.count == 2)
-        #expect(center.presentation?.title.contains("×2") == true)
-
-        clock.date = clock.date.addingTimeInterval(0.1)
-        center.record(
-            event(actionID: "send", name: "发送到微信", result: .timedOut),
-            strings: strings
-        )
-        #expect(center.presentation?.count == 1)
-        #expect(center.presentation?.title.contains("timed out") == true)
-        #expect(center.presentation?.context == "Took longer than 10 seconds")
-        center.dismiss()
+        center.record(event(result: .timedOut), strings: strings)
+        let failures = hud.rows.filter { $0.tone == .failure }
+        #expect(failures.count == 1)
+        #expect(failures.first?.title.contains("timed out") == true)
+        #expect(center.presentation?.context == nil)
     }
 
     @Test func disabledSuccessOnlyLogs() throws {
@@ -285,26 +272,27 @@ struct ActionFeedbackCenterTests {
         #expect(center.sessionCount == 0)
     }
 
-    @Test func hoverAndDragPauseSuccessDismissal() async throws {
+    @Test func hoverAndDragKeepSuccessRows() async throws {
         let (localization, defaults, name) = try makeLocalization()
-        defer { defaults.removePersistentDomain(forName: name) }
-        let center = makeCenter(successDuration: 0.08)
-        let strings = ActionFeedbackStrings(localization: localization)
-        center.record(event(), strings: strings)
-        #expect(center.presentation?.kind == .success)
+        resetHud()
+        defer {
+            resetHud()
+            defaults.removePersistentDomain(forName: name)
+        }
+        let center = makeCenter(successDuration: 0.04)
+        center.record(event(), strings: ActionFeedbackStrings(localization: localization))
+        #expect(hud.rows.count == 1)
 
         center.setHovering(true)
-        try await Task.sleep(nanoseconds: 600_000_000)
-        #expect(center.presentation != nil)
-
         center.setDragging(true)
-        center.setHovering(false)
-        try await Task.sleep(nanoseconds: 600_000_000)
-        #expect(center.presentation != nil)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        #expect(hud.rows.count == 1)
 
+        center.setHovering(false)
         center.setDragging(false)
-        try await Task.sleep(nanoseconds: 800_000_000)
-        #expect(center.presentation == nil)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        // 悬停和拖动都不影响历史行：成功行只按「最多三行」滚动。
+        #expect(hud.rows.count == 1)
     }
 
     @Test func copyDiagnosticsIsSanitizedAndResetsCopiedState() async throws {

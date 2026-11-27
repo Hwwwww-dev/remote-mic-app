@@ -58,8 +58,10 @@ struct BridgeAppModelActionRegressionTests {
         #expect(sent.first?.1 == profile.id)
         #expect(sent.first?.2 == false)
         try await waitForFeedback()
-        #expect(ActionFeedbackCenter.shared.presentation?.kind == .success)
-        #expect(ActionFeedbackCenter.shared.presentation?.title.contains("Example Agent") == true)
+        // 成功不再占卡片，只往 HUD 历史里推一行。
+        #expect(ActionFeedbackCenter.shared.presentation == nil)
+        #expect(ActionFeedbackCenter.shared.lastPresentation?.kind == .success)
+        #expect(HudCenter.shared.rows.first?.title.contains("Example Agent") == true)
         ActionFeedbackCenter.shared.dismiss()
     }
 
@@ -90,7 +92,8 @@ struct BridgeAppModelActionRegressionTests {
         #expect(sentCount == 0)
         try await waitForFeedback()
         #expect(ActionFeedbackCenter.shared.presentation?.kind == .failure)
-        #expect(ActionFeedbackCenter.shared.presentation?.context == "Target app not found")
+        // 失败行只保留标题：上下文不再进面板，失败原因仍在诊断与播报文本里。
+        #expect(ActionFeedbackCenter.shared.presentation?.context == nil)
         #expect(ActionFeedbackCenter.shared.presentation?.title.contains("Example Agent") == true)
         ActionFeedbackCenter.shared.dismiss()
     }
@@ -121,7 +124,7 @@ struct BridgeAppModelActionRegressionTests {
         #expect(!handled)
         try await waitForFeedback()
         #expect(ActionFeedbackCenter.shared.presentation?.kind == .failure)
-        #expect(ActionFeedbackCenter.shared.presentation?.context == "Target app isn’t running")
+        #expect(ActionFeedbackCenter.shared.presentation?.context == nil)
         ActionFeedbackCenter.shared.dismiss()
     }
 }

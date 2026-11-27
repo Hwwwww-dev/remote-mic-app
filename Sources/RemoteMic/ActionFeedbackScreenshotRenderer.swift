@@ -62,7 +62,7 @@ enum ActionFeedbackScreenshotRenderer {
                             : Color(hex: 0x1C1C1E)
                         HudPanelView(
                             card: state.card,
-                            lastCard: state.lastCard,
+                            rows: state.rows,
                             sessionCount: state.sessionCount,
                             mode: state.mode,
                             isRemoteConnected: state.isRemoteConnected,
@@ -127,56 +127,67 @@ enum ActionFeedbackScreenshotRenderer {
         language: AppLanguage,
         strings: ActionFeedbackStrings
     ) throws -> [RenderState] {
-        let successName = language == .simplifiedChinese ? "打开微信" : "Open WeChat"
+        let names = language == .simplifiedChinese
+            ? ["打开微信", "聚焦输入框", "向下翻半页"]
+            : ["Open WeChat", "Focus field", "Page down"]
         let failureName = language == .simplifiedChinese ? "发送到微信" : "Send to WeChat"
-        let success = try presentation(
-            event: ActionFeedbackEvent(
-                operationID: "demo-success",
-                actionID: "openWeChat",
-                actionName: successName,
-                result: .success,
-                elapsedMilliseconds: 96
-            ),
-            strings: strings,
-            handlers: ActionFeedbackActionHandlers()
-        )
-        let failure = try presentation(
-            event: ActionFeedbackEvent(
-                operationID: "demo-failure",
-                actionID: "combinationAction",
-                actionName: failureName,
-                result: .failure(.shortcutNotDelivered),
-                elapsedMilliseconds: 128,
-                stepCount: 3
-            ),
-            strings: strings,
-            handlers: ActionFeedbackActionHandlers(retry: {})
-        )
-        func card(_ presentation: ActionFeedbackPresentation) -> HudCard {
-            ActionFeedbackCenter.hudCard(for: presentation, strings: strings) { _ in }
+
+        func successRow(_ index: Int, elapsed: Int) -> HudRow {
+            HudRow(
+                id: UUID(),
+                tone: .success,
+                title: strings.format(strings.successTitleFormat, names[index]),
+                elapsedMilliseconds: elapsed
+            )
         }
+
+        let failureCard = HudCard(
+            tone: .failure,
+            title: strings.format(strings.failureTitleFormat, failureName),
+            elapsedMilliseconds: 128,
+            primaryAction: HudAction(
+                title: strings.actionTitles[.retry] ?? "Retry",
+                isProminent: true
+            ) {},
+            secondaryAction: HudAction(
+                title: strings.copyDiagnosticsTitle,
+                isProminent: false
+            ) {},
+            secondaryTitleWhenCopied: strings.copiedTitle,
+            closeLabel: strings.closeLabel
+        )
+
         return [
             RenderState(
                 name: "idle",
                 card: nil,
-                lastCard: card(success),
+                rows: [successRow(0, elapsed: 96), successRow(1, elapsed: 88), successRow(2, elapsed: 41)],
                 sessionCount: 4,
                 mode: .keyboard,
                 isRemoteConnected: true
             ),
             RenderState(
                 name: "success",
-                card: card(success),
-                lastCard: card(success),
-                sessionCount: 1,
+                card: nil,
+                rows: [successRow(1, elapsed: 88), successRow(0, elapsed: 96)],
+                sessionCount: 2,
                 mode: .keyboard,
                 isRemoteConnected: true
             ),
             RenderState(
                 name: "failure",
-                card: card(failure),
-                lastCard: card(failure),
-                sessionCount: 2,
+                card: failureCard,
+                rows: [
+                    HudRow(
+                        id: failureCard.id,
+                        tone: .failure,
+                        title: failureCard.title,
+                        elapsedMilliseconds: 128
+                    ),
+                    successRow(0, elapsed: 96),
+                    successRow(1, elapsed: 88),
+                ],
+                sessionCount: 12,
                 mode: .mouse,
                 isRemoteConnected: false
             ),
@@ -187,30 +198,10 @@ enum ActionFeedbackScreenshotRenderer {
     private struct RenderState {
         let name: String
         let card: HudCard?
-        let lastCard: HudCard?
+        let rows: [HudRow]
         let sessionCount: Int
         let mode: HudMode
         let isRemoteConnected: Bool
     }
 
-    private static func presentation(
-        event: ActionFeedbackEvent,
-        strings: ActionFeedbackStrings,
-        handlers: ActionFeedbackActionHandlers
-    ) throws -> ActionFeedbackPresentation {
-        let center = ActionFeedbackCenter(
-            successDuration: 3_600,
-            log: { _ in },
-            pasteboardWriter: { _ in }
-        )
-        center.configureStandardActions(
-            openSystemSettings: {},
-            reselectAction: {}
-        )
-        center.record(event, strings: strings, handlers: handlers)
-        guard let presentation = center.presentation else {
-            throw RenderingError.bitmapCreationFailed
-        }
-        return presentation
-    }
 }

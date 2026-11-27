@@ -1696,7 +1696,7 @@
 "action_feedback.hud.session_count" = "This session %@";
 "action_feedback.hud.mode.keyboard" = "Keyboard";
 "action_feedback.hud.mode.mouse" = "Mouse";
-"action_feedback.failure.title" = "“%@” didn’t run";
+"action_feedback.failure.title" = "“%@” failed to run";
 "action_feedback.timeout.title" = "“%@” timed out";
 "action_feedback.timeout.context" = "Took longer than 10 seconds";
 "action_feedback.timeout.detail" = "The target app didn’t respond in time. Try again, or check whether the app is stuck.";

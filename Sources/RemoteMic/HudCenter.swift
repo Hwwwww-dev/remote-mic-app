@@ -22,6 +22,15 @@ struct HudAction {
     let perform: @MainActor () -> Void
 }
 
+/// 面板里的一行。列表按时间倒序，新的在最上面；每行只保留标题和耗时，
+/// 详细文案交给 `HudCard`，这样历史行不会被撑高。
+struct HudRow: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let tone: HudTone
+    let title: String
+    let elapsedMilliseconds: Int?
+}
+
 struct HudCard: Identifiable {
     let id: UUID
     let tone: HudTone
@@ -184,7 +193,10 @@ final class HudCenter: ObservableObject {
     static let shared = HudCenter()
 
     @Published private(set) var card: HudCard?
-    @Published private(set) var lastCard: HudCard?
+    /// 面板最多保留的历史行数（含正在显示的失败行）。
+    static let maxRows = 3
+    /// 历史行，按时间倒序：`rows[0]` 是最新一条。
+    @Published private(set) var rows: [HudRow] = []
     @Published private(set) var sessionCount = 0
     @Published private(set) var isEnabled = true
     @Published private(set) var copiedCardID: UUID?
@@ -232,21 +244,39 @@ final class HudCenter: ObservableObject {
         isRemoteConnected = connected
     }
 
+    /// 推一张卡片。成功卡片只占一行历史；失败卡片额外成为「正在处理」的卡片，
+    /// 带按钮和关闭按钮，并且永远排在历史行最上面。
     func present(_ card: HudCard) {
-        self.card = card
-        lastCard = card
+        let row = HudRow(
+            id: card.id,
+            tone: card.tone,
+            title: card.title,
+            elapsedMilliseconds: card.elapsedMilliseconds
+        )
+        if card.tone == .failure {
+            // 多个失败只留最新一条：旧失败行被新失败顶掉，不做折叠翻页。
+            rows.removeAll { $0.tone == .failure }
+            self.card = card
+        }
+        // 有未处理的失败时，新的成功行插在失败行下面，失败一直占第一行。
+        let index = (self.card != nil && card.tone != .failure) ? 1 : 0
+        rows.insert(row, at: min(index, rows.count))
+        if rows.count > Self.maxRows {
+            rows.removeLast(rows.count - Self.maxRows)
+        }
         sessionCount += 1
     }
 
-    /// 卡片收起（例如成功提示到期），但 HUD 本身留在待命态。
+    /// 收起正在显示的失败卡片；HUD 本身和其余历史行留在原处。
     func clearCard() {
+        rows.removeAll { $0.id == card?.id }
         card = nil
         copiedCardID = nil
     }
 
     func reset() {
         card = nil
-        lastCard = nil
+        rows.removeAll()
         sessionCount = 0
         copiedCardID = nil
     }
