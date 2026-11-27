@@ -1774,16 +1774,22 @@ struct OnboardingView: View {
 
     @ViewBuilder
     private var remoteContent: some View {
+        // 构建里没有手机 / 网页遥控来源时（公开构建），旧流程遗留的 controlMethod
+        // 不能停在一张没有内容的手机遥控页，回到选择遥控器来源。
         switch settings.onboardingControlMethod {
         case .physicalRemote:
             physicalRemoteContent
-        case .iPhoneApp:
+        case .iPhoneApp where hasCompanionRemoteSource:
             iPhoneRemoteContent
-        case .webRemote:
+        case .webRemote where hasCompanionRemoteSource:
             webRemoteContent
-        case .unselected:
+        case .unselected, .iPhoneApp, .webRemote:
             remoteAvailabilityContent
         }
+    }
+
+    private var hasCompanionRemoteSource: Bool {
+        !availableAlternativeControlSources.isEmpty
     }
 
     private var physicalRemoteContent: some View {
@@ -2685,6 +2691,7 @@ struct OnboardingView: View {
             onboardingTitle("onboarding.complete.title")
             Text(verbatim: localization.text(
                 settings.siriRemoteEnabled && !membershipFeature.canUseSiriRemoteVoice
+                    && MembershipBuildCapabilities.isModulePresent
                     ? "onboarding.complete.siri_membership" : "onboarding.complete.detail"
             ))
                 .font(.system(size: 15))

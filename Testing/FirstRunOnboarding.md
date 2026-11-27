@@ -2,6 +2,32 @@
 
 > 执行本手册或修改 Onboarding 前，先完整阅读跨平台产品规范 [`feature/first-run-onboarding/PRODUCT_SPEC.md`](../feature/first-run-onboarding/PRODUCT_SPEC.md) 和 [macOS 平台适配](../feature/first-run-onboarding/platform-macos.md)。未来 Windows 测试应从同一产品规范出发，并使用 [Windows 平台适配](../feature/first-run-onboarding/platform-windows.md) 建立独立测试手册。
 
+## 没有会员模块的构建隐藏会员入口（2026-11-26）
+
+适用版本为包含本修改的 `main`（基线 `dd19060e`）；验证分支为本地工作区，未提交、未推送。影响分类为公开构建的界面收敛，不改变步骤顺序、连接判定、音频、持久化和语音键生命周期。公开构建只链接公开兼容层，`MembershipBuildCapabilities.isModulePresent` 为 `false`：手机 / 手表 / 网页遥控、常用语和 Siri Remote 语音没有可用的服务端，也没有可点开通的入口。这类构建里向导只有两处变化：完成页不再显示“Siri Remote 语音需要会员”的说明，改用普通完成文案；旧流程遗留的 `onboardingControlMethod`（iPhone App 或网页遥控）不再停在手机遥控页或网页遥控页，连接页回到选择遥控器来源，来源卡会改写该值。带私有会员模块的构建行为不变，每个新增条件都是“模块存在”与原条件的组合。
+
+### 验证步骤
+
+1. 用公开模式构建启动 App（不设置 `SAYALL_PRIVATE_ARTIFACT_PACKAGE_PATH`），打开设置向导，走完来源选择、权限、连接、音频、语音、按键，进入完成页。预期：来源选择页只有小米遥控器卡片，没有“更多方式”开关；完成页说明是普通完成文案，全页不出现“会员”。
+2. 先用 `defaults export com.hd838a.RemoteMic <文件>` 备份设置，再执行 `defaults write com.hd838a.RemoteMic "onboarding.step" -string remote` 和 `defaults write com.hd838a.RemoteMic "onboarding.controlMethod" -string iphone_app`，重新启动 App 并打开向导。预期：显示选择遥控器来源页和小米遥控器卡片，不是空白的手机遥控页；选择来源卡后可以继续。把 `iphone_app` 换成 `web_remote` 重复一次，预期相同。验证后恢复备份。
+3. 执行 `defaults write com.hd838a.RemoteMic "onboarding.step" -string complete`，打开向导完成页。预期：说明文字是普通完成文案。
+4. 用带私有会员模块的构建重复步骤 1–3。预期：与修改前一致（手机 / 网页遥控页照常，未开通会员时完成页显示 Siri Remote 会员说明）。
+
+失败判定：公开构建的向导出现“会员”“Plus”字样；旧流程遗留的手机 / 网页步骤停在空白页或无法继续；私有构建的手机 / 网页遥控页或 Siri Remote 会员说明消失。
+
+验证边界：本轮只有公开构建可用（本机 GitHub 账号没有私有仓库读取权限），步骤 4 没有执行，依据是代码阅读。步骤 2、3 依赖本机真实设置，没有在本轮执行；对应的渲染分支由 `OnboardingFlowTests` 的离屏夹具覆盖。
+
+### 本轮结果
+
+- 公开构建 `xcrun swift build --disable-keychain`（Debug）：通过。
+- `xcrun swift test --disable-keychain --filter "OnboardingFlowTests|OnboardingVoicePairingPlanTests"`：139 项通过。两处断言按构建能力分支：没有手机 / 网页遥控来源时，旧流程的手机 / 网页步骤渲染为来源选择页（`phone.retry`、`web.retry` 不存在，`control-source.xiaomi_remote.rc001` 存在）。
+- 全量 `xcrun swift test --disable-keychain`：1736 项，只有 `RemoteButtonsTests.reportsFinalResultThroughCompletion` 一项未通过。该项依赖测试进程的辅助功能授权（本机 `AXIsProcessTrusted=false`），与本次修改无关。
+- `SettingsPageRegressionTests.legacyPermissionNavigationResolvesToTheConsolidatedSettingsPage`：公开构建下 `.commonPhrases` 回落到“按键”页。
+- 设置页用已安装包的离屏设置渲染复核（`REMOTE_MIC_SETTINGS_SCREENSHOT_*`，`1067 × 732`，中文浅色）：侧边栏没有“会员”行；连接页只有设备面板和语音设备面板；动作编辑器的分类里没有“常用语”。
+- Release 构建、打包（`~/Applications/SayAll.app`，构建号 443，arm64，公开模式，ad-hoc 签名）和启动都通过，没有崩溃报告。新签名没有辅助功能和输入监控授权，启动日志为 `HID PERMISSIONS input=false accessibility=false`。
+- 真实窗口逐页点击（已安装包，构建号 443，窗口 `1067 × 772`，中文浅色）：依次点侧边栏“按键 / 聚焦与翻页 / 连接 / 回眸 / 设置 / 我的”，读取每页的界面文字。六页都没有“会员”“Plus”“开通”“常用语”“iPhone”“手表”“网页”“小程序”；连接页只有设备面板和语音设备面板；动作编辑器的分类只有“全部 / 基础按键 / 自定义按键 / 系统与媒体 / 输入框 / 打开 App / 按住 / 按键速度”。唯一出现“手机”的是“我的”页分享卡片的“用遥控器或手机在 Mac 上进行语音输入”，属于宣传语，与会员无关。点击只做页面切换和分类筛选，没有改动任何设置。
+- 未验证：向导步骤 1～3 的真实设置写入（会改动本机与正式版共用的设置），私有构建回归。
+
 ## 连接页右栏去重、遥控器放大、配对动画与文案收紧（2026-11-20）
 
 适用版本为包含本修改的 `main` 或对应候选；验证分支为 `codex/onboarding-remote-pairing-animation-ui-20261121`。影响分类为局部 UI 与文案变化：连接页右栏移除与左栏重复的连接检查面板；小米实体遥控器图在 `1020 × 772` 窗口内由 `190 × 285 pt` 放大到 `300 × 450 pt`，苹果遥控器图由 `1.8× / 190 × 360 pt` 放大到 `2.5× / 300 × 450 pt`；小米遥控器尚未连接时 Home 与 Menu 同步呼吸，苹果遥控器尚未连接时返回与音量加同步呼吸；连接页文案去掉末尾句号。步骤顺序、连接判定、普通按键门禁、音频、持久化和语音键生命周期均不变。

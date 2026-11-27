@@ -9,6 +9,19 @@ import SayAllMembershipHostAdapter
 import SayAllHostBridge
 #endif
 
+/// 会员模块是否随本构建一起编译。
+///
+/// 公开构建只链接公开兼容层：手机 / 手表 / 网页遥控、常用语、Siri Remote 语音没有
+/// 可用的服务端，也没有可点开通的入口。界面据此整块隐藏这些入口，而不是留一个永远
+/// 禁用、点了没有说明的控件。
+enum MembershipBuildCapabilities {
+    #if SAYALL_MEMBERSHIP_ENABLED && canImport(SayAllMembershipHostAdapter)
+    static let isModulePresent = true
+    #else
+    static let isModulePresent = false
+    #endif
+}
+
 enum HostRemoteSessionAccess: Equatable {
     case authorized
     case plusRequired

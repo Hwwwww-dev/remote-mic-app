@@ -265,7 +265,11 @@ enum SettingsPageBehavior {
     }
 
     static func visibleSection(for requestedSection: SettingsSection) -> SettingsSection {
-        requestedSection == .permissions ? .about : requestedSection
+        // 没有会员模块的构建里「常用语」页没有内容，回落到发起入口的「按键」页。
+        if requestedSection == .commonPhrases, !MembershipBuildCapabilities.isModulePresent {
+            return .mapping
+        }
+        return requestedSection == .permissions ? .about : requestedSection
     }
 
     static func showsUpdateBadge(
@@ -467,13 +471,14 @@ private enum MappingActionFilter: String, CaseIterable, Identifiable {
     }
 
     /// 公开构建没有注入 Macro Package：此时不显示「组合动作」胶囊，
-    /// 而不是让用户点进一个空分类。
-    static func visibleCases(macroFeatureVisible: Bool) -> [Self] {
+    /// 而不是让用户点进一个空分类。没有会员模块时「常用语」同理。
+    static func visibleCases(macroFeatureVisible: Bool, commonPhrasesVisible: Bool) -> [Self] {
         var cases: [Self] = [.all, .basicKeys, .customShortcuts, .systemAndMedia, .custom]
         if macroFeatureVisible {
             cases.append(.combinations)
         }
         cases.append(contentsOf: [.commonPhrases, .applications, .hold, .buttonSpeed])
+        cases.removeAll { $0 == .commonPhrases && !commonPhrasesVisible }
         return cases
     }
 
@@ -1350,7 +1355,11 @@ struct SettingsView: View {
                     }
                         .frame(width: SettingsPageBehavior.mappingRemoteCardWidth + 32, alignment: .top)
                     VStack(spacing: 14) {
-                        phoneConnectionsPanel
+                        // 没有会员模块的构建里手机 / 手表 / 网页遥控无法连接：
+                        // 整块隐藏，而不是留三行永远「未启用」、又没有连接按钮的入口。
+                        if MembershipBuildCapabilities.isModulePresent {
+                            phoneConnectionsPanel
+                        }
                         audioSettingsPanel
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -2382,7 +2391,8 @@ struct SettingsView: View {
         guard action != .disabled else { return .all }
         let filter = MappingActionFilter(category: action.category)
         return MappingActionFilter.visibleCases(
-            macroFeatureVisible: macroFeature.isFeatureVisible
+            macroFeatureVisible: macroFeature.isFeatureVisible,
+            commonPhrasesVisible: MembershipBuildCapabilities.isModulePresent
         ).contains(filter) ? filter : .all
     }
 
@@ -4040,7 +4050,8 @@ struct SettingsView: View {
             showsBattery: connected && (level != nil || power == .charging || power == .externalPower)
                 && RemoteBatteryPresentationPolicy.shouldShowBattery(model: profile.model, level: level, powerState: power),
             enableTitle: appleNeedsEnable ? localization.text("siri_remote.activation.enable") : nil,
-            membershipTitle: requiresSiriRemoteMembership(for: profile) ? localization.text("remote.card.open_membership") : nil,
+            membershipTitle: requiresSiriRemoteMembership(for: profile) && MembershipBuildCapabilities.isModulePresent
+                ? localization.text("remote.card.open_membership") : nil,
             voiceRecoveryTitle: canRecoverVoice ? localization.text("remote.card.recover_voice") : nil,
             voiceRecoveryHelp: canRecoverVoice ? localization.text("remote.card.recover_voice.help") : nil,
             connectionTitle: history ? localization.text(recovering ? "connection.history.cancel" : "connection.history.connect") : nil,
@@ -4235,6 +4246,10 @@ struct SettingsView: View {
             current: configured.action,
             experimentalContinuousRecordingEnabled: settings.experimentalContinuousRecordingEnabled
         ).filter { $0 != .disabled && $0 != .combinationAction }
+        .filter {
+            // 没有会员模块的构建里常用语不可用，候选里一并不出现。
+            $0 != .openCommonPhrases || MembershipBuildCapabilities.isModulePresent
+        }
         let isManagedPowerAction = button == .power &&
             trigger == .singleClick &&
             settings.experimentalContinuousRecordingEnabled
@@ -4323,7 +4338,8 @@ struct SettingsView: View {
     /// 胶囊筛选行：始终单行，放不下时左右滚动。
     private var mappingActionFilterControl: some View {
         let filters = MappingActionFilter.visibleCases(
-            macroFeatureVisible: macroFeature.isFeatureVisible
+            macroFeatureVisible: macroFeature.isFeatureVisible,
+            commonPhrasesVisible: MembershipBuildCapabilities.isModulePresent
         )
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
