@@ -1,5 +1,6 @@
 # Bug 记录
 
+- [映射回读通过后原生方向键仍泄漏，App 切换器一格就被提交、上下文菜单一按方向键就关](./2026-11-27-native-arrow-leak-commits-app-switcher.md)
 - [应用内安装 Siri Remote 组件后 Onboarding 仍不显示苹果遥控器](./2026-11-25-onboarding-siri-remote-hidden-without-installer-receipt.md)
 - [RC003 语音流起始空洞（关联 10/16 秒录音尾字丢失）](./2026-11-24-rc003-early-stream-gap-first-word.md)
 - [虚拟音频引擎初始化阻塞导致语音会话永不结束、菜单栏图标长期变红](./2026-11-24-audio-engine-init-hang-stuck-voice-warning.md)

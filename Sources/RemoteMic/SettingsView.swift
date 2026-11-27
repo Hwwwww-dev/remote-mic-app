@@ -265,7 +265,11 @@ enum SettingsPageBehavior {
     }
 
     static func visibleSection(for requestedSection: SettingsSection) -> SettingsSection {
-        requestedSection == .permissions ? .about : requestedSection
+        // 没有会员模块的构建里「常用语」页没有内容，回落到发起入口的「按键」页。
+        if requestedSection == .commonPhrases, !MembershipBuildCapabilities.isModulePresent {
+            return .mapping
+        }
+        return requestedSection == .permissions ? .about : requestedSection
     }
 
     static func showsUpdateBadge(
@@ -467,13 +471,20 @@ private enum MappingActionFilter: String, CaseIterable, Identifiable {
     }
 
     /// 公开构建没有注入 Macro Package：此时不显示「组合动作」胶囊，
-    /// 而不是让用户点进一个空分类。
-    static func visibleCases(macroFeatureVisible: Bool) -> [Self] {
+    /// 而不是让用户点进一个空分类。没有会员模块时「常用语」同理。
+    /// 鼠标模式不支持「按住」，因此也不显示那个胶囊。
+    static func visibleCases(macroFeatureVisible: Bool, commonPhrasesVisible: Bool,
+                             mouseMode: Bool = false) -> [Self] {
         var cases: [Self] = [.all, .basicKeys, .customShortcuts, .systemAndMedia, .custom]
         if macroFeatureVisible {
             cases.append(.combinations)
         }
         cases.append(contentsOf: [.commonPhrases, .applications, .hold, .buttonSpeed])
+        // 鼠标模式没有单独的「按住时」入口：方向键按住就是连续移动光标。
+        if mouseMode {
+            cases.removeAll { $0 == .hold }
+        }
+        cases.removeAll { $0 == .commonPhrases && !commonPhrasesVisible }
         return cases
     }
 
@@ -604,7 +615,14 @@ struct SettingsView: View {
     @ObservedObject private var privateFeature: PrivateFeatureIntegration
     @State private var preservesMappingContextOnNavigation = false
     @State private var editingMappingProfileID: UUID?
+    /// 按键页正在编辑哪一套键位：键盘模式或鼠标模式。鼠标模式只覆盖
+    /// 上、下、左、右、确定、返回六个键，其余按键两种模式共用键盘键位。
+    // 离屏截图可以预设编辑态模式（REMOTE_MIC_SETTINGS_SCREENSHOT_MAPPING_MODE=mouse），生产环境恒为键盘模式。
+    @State private var mappingMode: MappingMode = ProcessInfo.processInfo.environment[
+        "REMOTE_MIC_SETTINGS_SCREENSHOT_MAPPING_MODE"
+    ].flatMap(MappingMode.init(rawValue:)) ?? .keyboard
     @State private var mappingActionSave = ButtonMappingSaveState()
+    @State private var showsMouseModeSettings = false
     @State private var mappingHoldSave = ButtonMappingSaveState()
     @State private var mappingProfileCreation: ButtonMappingProfileCreation?
     @State private var savingMappingProfileError: String?
@@ -1350,7 +1368,11 @@ struct SettingsView: View {
                     }
                         .frame(width: SettingsPageBehavior.mappingRemoteCardWidth + 32, alignment: .top)
                     VStack(spacing: 14) {
-                        phoneConnectionsPanel
+                        // 没有会员模块的构建里手机 / 手表 / 网页遥控无法连接：
+                        // 整块隐藏，而不是留三行永远「未启用」、又没有连接按钮的入口。
+                        if MembershipBuildCapabilities.isModulePresent {
+                            phoneConnectionsPanel
+                        }
                         audioSettingsPanel
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -2378,11 +2400,13 @@ struct SettingsView: View {
         button: RemoteButton,
         trigger: ButtonTrigger
     ) -> MappingActionFilter {
-        let action = mappingConfiguration(for: button, trigger: trigger).action
+        let action = resolvedMappingConfiguration(for: button, trigger: trigger).action
         guard action != .disabled else { return .all }
         let filter = MappingActionFilter(category: action.category)
         return MappingActionFilter.visibleCases(
-            macroFeatureVisible: macroFeature.isFeatureVisible
+            macroFeatureVisible: macroFeature.isFeatureVisible,
+            commonPhrasesVisible: MembershipBuildCapabilities.isModulePresent,
+            mouseMode: mappingMode == .mouse
         ).contains(filter) ? filter : .all
     }
 
@@ -2465,6 +2489,16 @@ struct SettingsView: View {
         }
     }
 
+    /// 按键页当前模式实际生效的动作：键盘模式走基础/方案解析，鼠标模式走鼠标模式键位。
+    /// 只有六个按键分模式，其余按键两种模式共用键盘键位。
+    private func resolvedMappingConfiguration(for button: RemoteButton,
+                                              trigger: ButtonTrigger) -> ConfiguredButtonAction {
+        guard mappingMode == .mouse, AppSettings.supportsMouseModeBinding(button) else {
+            return mappingConfiguration(for: button, trigger: trigger)
+        }
+        return settings.configuredMouseModeAction(for: button, trigger: trigger)
+    }
+
     /// 按指定方案解析动作。方案总览可能正在查看 A 方案，而按键页正在编辑 B 方案；
     /// 任何方案作用域的摘要都必须显式传入要解析的方案。
     private func mappingConfiguration(
@@ -2490,6 +2524,10 @@ struct SettingsView: View {
 
     private func canWriteMappingBinding(button: RemoteButton, trigger: ButtonTrigger) -> Bool {
         guard !isMappingProfilePreviewOnly else { return false }
+        if mappingMode == .mouse {
+            // 鼠标模式只写基础键位，不进方案作用域；不可分模式的按键没有这项。
+            return editingMappingProfileID == nil && AppSettings.supportsMouseModeBinding(button)
+        }
         switch mappingDisplayConfiguration(for: button, trigger: trigger) {
         case let .explicit(value): return value.isEditable
         case .inherited: return true
@@ -2501,6 +2539,16 @@ struct SettingsView: View {
 
     private func saveMappingBinding(_ configured: ConfiguredButtonAction?, button: RemoteButton, trigger: ButtonTrigger) {
         guard canWriteMappingBinding(button: button, trigger: trigger) else { return }
+        if mappingMode == .mouse {
+            guard let configured else { return }
+            settings.setMouseModeBinding(
+                configured,
+                for: button,
+                trigger: trigger,
+                profileID: settings.selectedRemoteProfileID
+            )
+            return
+        }
         let previousAction = mappingConfiguration(for: button, trigger: trigger)
         let previousHold = mappingHoldMode(for: button)
         mappingHoldSave = .init()
@@ -2537,13 +2585,13 @@ struct SettingsView: View {
     }
 
     private func setMappingAction(_ action: ButtonAction, for button: RemoteButton, trigger: ButtonTrigger) {
-        var configured = mappingConfiguration(for: button, trigger: trigger)
+        var configured = resolvedMappingConfiguration(for: button, trigger: trigger)
         configured.action = action
         saveMappingBinding(configured, button: button, trigger: trigger)
     }
 
     private func setMappingShortcut(_ shortcut: CustomKeyboardShortcut?, for button: RemoteButton, trigger: ButtonTrigger) {
-        var configured = mappingConfiguration(for: button, trigger: trigger)
+        var configured = resolvedMappingConfiguration(for: button, trigger: trigger)
         configured.shortcut = shortcut
         if shortcut != nil {
             // A recorded shortcut is an executable action in its own right.
@@ -2557,7 +2605,7 @@ struct SettingsView: View {
     }
 
     private func setMappingApplicationProfileID(_ id: UUID?, for button: RemoteButton, trigger: ButtonTrigger) {
-        var configured = mappingConfiguration(for: button, trigger: trigger)
+        var configured = resolvedMappingConfiguration(for: button, trigger: trigger)
         configured.applicationProfileID = id
         saveMappingBinding(configured, button: button, trigger: trigger)
     }
@@ -3114,7 +3162,7 @@ struct SettingsView: View {
     }
 
     private var mappingPage: some View {
-        hardwareMappingPage {
+        hardwareMappingPage(showsModeBar: true) {
             RemoteMappingCanvas(
                 selectedButton: $selectedRemoteButton,
                 activeButtons: model.activeRemoteButtons,
@@ -3125,7 +3173,7 @@ struct SettingsView: View {
                 actionDetail: { button, trigger in mappingActionDetail(for: button, trigger: trigger) },
                 actionSource: { button, trigger in mappingActionSource(for: button, trigger: trigger) },
                 actionConfigured: { button, trigger in
-                    mappingActionIsConfigured(for: button, trigger: trigger)
+                    mappingActionIsEmphasized(for: button, trigger: trigger)
                 },
                 onEdit: { button, trigger in
                     selectedRemoteButton = button
@@ -3145,6 +3193,8 @@ struct SettingsView: View {
                     )
                 },
                 onEditHold: { button in
+                    // 鼠标模式没有「按住」这一项，切到鼠标模式时卡片也不显示入口。
+                    guard mappingMode == .keyboard else { return }
                     selectedRemoteButton = button
                     mappingPageStateDeviceID = settings.selectedRemoteProfileID
                     mappingEditingTarget = nil
@@ -3154,7 +3204,17 @@ struct SettingsView: View {
                     requestMappingEditorScroll(focusHold: true)
                 },
                 onVoiceSettings: presentMappingVoiceSettings,
-                reservedButtons: profileScopeReservedButtons
+                reservedButtons: profileScopeReservedButtons,
+                showsHoldChip: mappingMode == .keyboard,
+                modeBadge: { button in
+                    guard mappingMode == .mouse,
+                          !AppSettings.supportsMouseModeBinding(button) else { return nil }
+                    return localization.text("button_mapping.mode.shared")
+                },
+                modeAccent: mappingModeAccent,
+                modeEditable: { button in
+                    mappingMode == .mouse && AppSettings.supportsMouseModeBinding(button)
+                }
             )
             // 按下实体遥控器时只让对应卡片显示按下态（橙色），不移动选中项：
             // 选中项决定高亮和编辑落点，跟着按键跳会把手里的编辑顶掉。
@@ -3162,8 +3222,195 @@ struct SettingsView: View {
         }
     }
 
+    /// 模式切换独占页头下方的横带：页头本身保持单列紧凑布局，窄窗口下不会被挤成两栏。
+    private var mappingModeBar: some View {
+        mappingModeControl
+            .padding(.horizontal, 22)
+            .padding(.top, 8)
+            .padding(.bottom, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 键盘模式 / 鼠标模式切换，右侧固定显示当前真正在运行的模式：
+    /// 编辑态和运行态可能不同，用户必须一眼看出遥控器现在按哪个模式响应。
+    private var mappingModeControl: some View {
+        let runningMode: MappingMode = model.isMouseModeActive ? .mouse : .keyboard
+        let runningAccent: Color = runningMode == .mouse ? .orange : .secondary
+        return HStack(spacing: 10) {
+            mappingModeSegments
+            Text(String(
+                format: localization.text("button_mapping.mode.current"),
+                localization.text(runningMode.localizationKey)
+            ))
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(runningAccent)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                runningAccent.opacity(0.12),
+                in: Capsule(style: .continuous)
+            )
+            .accessibilityLabel(Text(String(
+                format: localization.text("button_mapping.mode.current"),
+                localization.text(runningMode.localizationKey)
+            )))
+            if mappingMode == .mouse {
+                Button {
+                    showsMouseModeSettings = true
+                } label: {
+                    Label(
+                        localization.text("button_mapping.mouse_settings"),
+                        systemImage: "slider.horizontal.3"
+                    )
+                    .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Color.orange)
+                .popover(isPresented: $showsMouseModeSettings, arrowEdge: .bottom) {
+                    mouseModeSettingsContent
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .onChange(of: mappingMode) { mode in
+            // 鼠标模式是基础键位的一部分，不进方案作用域；切过去时收起方案编辑、
+            // 按住编辑和不可分模式的按键编辑器。
+            editingMappingProfileID = nil
+            mappingHoldEditingButton = nil
+            mappingActionFilter = .all
+            if mode == .mouse,
+               let button = mappingEditingTarget?.button,
+               !AppSettings.supportsMouseModeBinding(button) {
+                mappingEditingTarget = nil
+            }
+        }
+    }
+
+    private var mouseModeTuning: MouseModeTuning {
+        model.settings.mouseModeTuning
+    }
+
+    /// 鼠标模式的四组参数。三档预设而不是滑杆：这几项只影响光标移动和确定键手势，
+    /// 档位够用，也不容易调出一套自己都复现不了的手感。
+    private var mouseModeSettingsContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(localization.text("mouse_tuning.title"))
+                .font(.system(size: 12, weight: .semibold))
+            mouseModeTuningRow(
+                localization.text("mouse_tuning.speed"),
+                selection: Binding(
+                    get: { mouseModeTuning.speed },
+                    set: { model.settings.mouseModeTuning.speed = $0 }
+                ),
+                presets: MouseModeTuning.SpeedPreset.allCases,
+                label: { localization.text($0.localizationKey) }
+            )
+            mouseModeTuningRow(
+                localization.text("mouse_tuning.acceleration"),
+                selection: Binding(
+                    get: { mouseModeTuning.acceleration },
+                    set: { model.settings.mouseModeTuning.acceleration = $0 }
+                ),
+                presets: MouseModeTuning.AccelerationPreset.allCases,
+                label: { localization.text($0.localizationKey) }
+            )
+            mouseModeTuningRow(
+                localization.text("mouse_tuning.double_click"),
+                selection: Binding(
+                    get: { mouseModeTuning.doubleClick },
+                    set: { model.settings.mouseModeTuning.doubleClick = $0 }
+                ),
+                presets: MouseModeTuning.DoubleClickPreset.allCases,
+                label: { localization.text($0.localizationKey) }
+            )
+            mouseModeTuningRow(
+                localization.text("mouse_tuning.long_press"),
+                selection: Binding(
+                    get: { mouseModeTuning.longPress },
+                    set: { model.settings.mouseModeTuning.longPress = $0 }
+                ),
+                presets: MouseModeTuning.LongPressPreset.allCases,
+                label: { localization.text($0.localizationKey) }
+            )
+            Text(localization.text("mouse_tuning.help"))
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Divider()
+            Button(localization.text("mouse_tuning.reset")) {
+                model.settings.mouseModeTuning = .standard
+            }
+            .font(.system(size: 12))
+            .disabled(mouseModeTuning == .standard)
+        }
+        .padding(14)
+        .frame(width: 320)
+    }
+
+    private func mouseModeTuningRow<Preset: Hashable & Identifiable>(
+        _ title: String,
+        selection: Binding<Preset>,
+        presets: [Preset],
+        label: @escaping (Preset) -> String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            Picker(title, selection: selection) {
+                ForEach(presets) { preset in
+                    Text(label(preset)).tag(preset)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .accessibilityLabel(Text(title))
+        }
+    }
+
+    /// 当前编辑模式的强调色。鼠标模式用橙色：动作文字、卡片淡底与描边都跟着变，
+    /// 按键名图标保持中性，免得整卡抢过文字。
+    private var mappingModeAccent: Color {
+        mappingMode == .mouse ? .orange : .accentColor
+    }
+
+    /// 自绘两段开关：系统分段控件不能给单段上色，鼠标模式需要整段换色让人一眼看出在改哪套键位。
+    private var mappingModeSegments: some View {
+        HStack(spacing: 2) {
+            ForEach(MappingMode.allCases) { mode in
+                let selected = mappingMode == mode
+                Button {
+                    mappingMode = mode
+                } label: {
+                    Text(localization.text(mode.localizationKey))
+                        .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                        .foregroundStyle(selected ? Color.white : Color.primary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                        .background(
+                            selected ? (mode == .mouse ? Color.orange : Color.accentColor) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selected ? [.isSelected] : [])
+            }
+        }
+        .padding(2)
+        .frame(width: 200)
+        .background(
+            Color.primary.opacity(0.06),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Text(localization.text("button_mapping.mode.picker")))
+    }
+
     private func hardwareMappingPage<HardwareCanvas: View>(
         includeSiriScrollArrow: Bool = false,
+        showsModeBar: Bool = false,
         @ViewBuilder hardwareCanvas: @escaping () -> HardwareCanvas
     ) -> some View {
         VStack(spacing: 0) {
@@ -3181,6 +3428,8 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             Divider()
+
+            if showsModeBar { mappingModeBar }
 
             // 方案切换与右侧动作入口固定在页头下方的横带里：它不随内容滚动，宽度等于页面可视宽度，
             // 因此「保存为键位方案 / 编辑」能稳定贴住右边缘，也不会被画布撑出的溢出宽度带出屏幕。
@@ -3226,7 +3475,8 @@ struct SettingsView: View {
                                         mappingEditorPanel(target)
                                             .id("mapping-action-editor")
                                     }
-                                    if mappingActionFilter == .all || mappingActionFilter == .hold {
+                                    if mappingMode == .keyboard,
+                                       mappingActionFilter == .all || mappingActionFilter == .hold {
                                         mappingHoldEditorPanel(target.button)
                                             .id("mapping-hold-tab")
                                     }
@@ -3236,6 +3486,7 @@ struct SettingsView: View {
                                     }
                                 }
                             } else if mappingInteractionBelongsToSelectedRemote,
+                                      mappingMode == .keyboard,
                                       let button = mappingHoldEditingButton {
                                 mappingHoldEditorPanel(button)
                                     .id("mapping-hold-editor")
@@ -3645,15 +3896,38 @@ struct SettingsView: View {
                         .background(Color.accentColor.opacity(0.12), in: Capsule())
                     Spacer()
                     mappingSaveStatus(button: target.button, trigger: target.trigger)
+                    // 鼠标模式单独设置过的键位要能一键回到默认，否则改错只能删配置。
+                    if isMouseModeBindingTarget(target.button),
+                       settings.hasExplicitMouseModeBinding(
+                           for: target.button,
+                           trigger: target.trigger,
+                           profileID: settings.selectedRemoteProfileID
+                       ) {
+                        Button {
+                            settings.resetMouseModeBinding(
+                                for: target.button,
+                                trigger: target.trigger,
+                                profileID: settings.selectedRemoteProfileID
+                            )
+                        } label: {
+                            Label(localization.text("button_mapping.mode.reset_default"),
+                                  systemImage: "arrow.uturn.backward")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
+                        .help(localization.text("button_mapping.mode.reset_default_help"))
+                    }
                     Toggle(isOn: Binding(
                             get: {
-                                if case let .explicit(value) = mappingDisplayConfiguration(for: target.button, trigger: target.trigger) {
-                                    return value.configured?.action == .disabled
-                                }
-                                return false
+                                resolvedMappingConfiguration(
+                                    for: target.button, trigger: target.trigger
+                                ).action == .disabled
                             },
                             set: { disabled in
-                                var value = mappingConfiguration(for: target.button, trigger: target.trigger)
+                                var value = resolvedMappingConfiguration(
+                                    for: target.button, trigger: target.trigger
+                                )
                                 value.action = disabled ? .disabled : .escape
                                 saveMappingBinding(!disabled && editingMappingProfileID != nil ? nil : value,
                                     button: target.button, trigger: target.trigger)
@@ -4040,7 +4314,8 @@ struct SettingsView: View {
             showsBattery: connected && (level != nil || power == .charging || power == .externalPower)
                 && RemoteBatteryPresentationPolicy.shouldShowBattery(model: profile.model, level: level, powerState: power),
             enableTitle: appleNeedsEnable ? localization.text("siri_remote.activation.enable") : nil,
-            membershipTitle: requiresSiriRemoteMembership(for: profile) ? localization.text("remote.card.open_membership") : nil,
+            membershipTitle: requiresSiriRemoteMembership(for: profile) && MembershipBuildCapabilities.isModulePresent
+                ? localization.text("remote.card.open_membership") : nil,
             voiceRecoveryTitle: canRecoverVoice ? localization.text("remote.card.recover_voice") : nil,
             voiceRecoveryHelp: canRecoverVoice ? localization.text("remote.card.recover_voice.help") : nil,
             connectionTitle: history ? localization.text(recovering ? "connection.history.cancel" : "connection.history.connect") : nil,
@@ -4228,13 +4503,18 @@ struct SettingsView: View {
         _ button: RemoteButton,
         trigger: ButtonTrigger
     ) -> some View {
-        let configured = mappingConfiguration(for: button, trigger: trigger)
+        let configured = resolvedMappingConfiguration(for: button, trigger: trigger)
         let installedBundleIdentifiers = PresetApplication.installedBundleIdentifiers
         let actions = ButtonAction.pickerActions(
             installedBundleIdentifiers: installedBundleIdentifiers,
             current: configured.action,
-            experimentalContinuousRecordingEnabled: settings.experimentalContinuousRecordingEnabled
+            experimentalContinuousRecordingEnabled: settings.experimentalContinuousRecordingEnabled,
+            mode: mappingMode
         ).filter { $0 != .disabled && $0 != .combinationAction }
+        .filter {
+            // 没有会员模块的构建里常用语不可用，候选里一并不出现。
+            $0 != .openCommonPhrases || MembershipBuildCapabilities.isModulePresent
+        }
         let isManagedPowerAction = button == .power &&
             trigger == .singleClick &&
             settings.experimentalContinuousRecordingEnabled
@@ -4323,7 +4603,9 @@ struct SettingsView: View {
     /// 胶囊筛选行：始终单行，放不下时左右滚动。
     private var mappingActionFilterControl: some View {
         let filters = MappingActionFilter.visibleCases(
-            macroFeatureVisible: macroFeature.isFeatureVisible
+            macroFeatureVisible: macroFeature.isFeatureVisible,
+            commonPhrasesVisible: MembershipBuildCapabilities.isModulePresent,
+            mouseMode: mappingMode == .mouse
         )
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
@@ -6626,6 +6908,13 @@ struct SettingsView: View {
 
     private func mappingActionSummary(for button: RemoteButton, trigger: ButtonTrigger,
                                       configuredAction: ConfiguredButtonAction? = nil) -> String {
+        if configuredAction == nil, isMouseModeBindingTarget(button) {
+            let mouseConfigured = settings.configuredMouseModeAction(for: button, trigger: trigger)
+            if mouseConfigured.action == .disabled {
+                return localization.text("button_mapping.action.no_action")
+            }
+            return actionSummary(mouseConfigured)
+        }
         if configuredAction == nil, editingMappingProfileID != nil {
             switch mappingDisplayConfiguration(for: button, trigger: trigger) {
             case let .explicit(value):
@@ -6685,8 +6974,27 @@ struct SettingsView: View {
         )
     }
 
+    /// 鼠标模式只覆盖六个按键：其余按键在鼠标模式里仍执行键盘键位，卡片要说明这一点。
+    private func isMouseModeBindingTarget(_ button: RemoteButton) -> Bool {
+        mappingMode == .mouse && AppSettings.supportsMouseModeBinding(button)
+    }
+
     /// 失效引用显示的虽然是可执行的基础动作，但来源仍是警告态，不能和显式配置同样使用主题色。
+    /// 卡片动作文字是否用模式色强调。鼠标模式下所有生效的动作都上色（含默认值），
+    /// 让“这套键位在鼠标模式里干什么”一眼看全；键盘模式仍只给显式配置过的动作上色。
+    private func mappingActionIsEmphasized(for button: RemoteButton, trigger: ButtonTrigger) -> Bool {
+        if isMouseModeBindingTarget(button) {
+            return resolvedMappingConfiguration(for: button, trigger: trigger).action != .disabled
+        }
+        return mappingActionIsConfigured(for: button, trigger: trigger)
+    }
+
     private func mappingActionIsConfigured(for button: RemoteButton, trigger: ButtonTrigger) -> Bool {
+        if isMouseModeBindingTarget(button) {
+            return settings.hasExplicitMouseModeBinding(
+                for: button, trigger: trigger, profileID: settings.selectedRemoteProfileID
+            )
+        }
         if case .unavailable = mappingDisplayConfiguration(for: button, trigger: trigger) {
             return false
         }
@@ -6696,6 +7004,12 @@ struct SettingsView: View {
     /// 悬停用的完整形态，和 `mappingActionSummary` 同一来源。
     private func mappingActionSource(for button: RemoteButton,
                                      trigger: ButtonTrigger) -> RemoteMappingActionSource {
+        if isMouseModeBindingTarget(button) {
+            let explicit = settings.hasExplicitMouseModeBinding(
+                for: button, trigger: trigger, profileID: settings.selectedRemoteProfileID
+            )
+            return explicit ? .explicit : .base
+        }
         guard editingMappingProfileID != nil else { return .base }
         switch mappingDisplayConfiguration(for: button, trigger: trigger) {
         case .inherited:
@@ -6708,6 +7022,14 @@ struct SettingsView: View {
     }
 
     private func mappingActionDetail(for button: RemoteButton, trigger: ButtonTrigger) -> String {
+        if isMouseModeBindingTarget(button) {
+            let explicit = settings.hasExplicitMouseModeBinding(
+                for: button, trigger: trigger, profileID: settings.selectedRemoteProfileID
+            )
+            return localization.text(explicit
+                ? "button_mapping.mode.mouse_detail_explicit"
+                : "button_mapping.mode.mouse_detail_default")
+        }
         let display = mappingDisplayConfiguration(for: button, trigger: trigger)
         if editingMappingProfileID != nil {
             switch display {
@@ -6774,6 +7096,8 @@ struct SettingsView: View {
             experimentalContinuousRecordingEnabled: settings.experimentalContinuousRecordingEnabled
         ).filter {
             $0 != .disabled && $0 != .customShortcut && $0 != .openCustomApplication && $0 != .combinationAction
+            // 鼠标模式专用的动作不能下发到手机端和方案：它们只在鼠标模式运行时才有意义。
+            && !$0.isMouseModeOnly
         }
         return ButtonActionCategory.allCases.compactMap { category in
             let actions: [ButtonProfileHostAction] = availableActions

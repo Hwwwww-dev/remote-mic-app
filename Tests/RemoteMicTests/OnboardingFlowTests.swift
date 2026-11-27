@@ -2437,7 +2437,13 @@ struct OnboardingFlowTests {
         )
         defer { iPhone.close() }
         #expect(iPhone.model.phoneRemoteState == .membershipRequired)
-        #expect(iPhone.probe.actions["phone.retry"] != nil)
+        if offscreenFixtureHasCompanionRemoteSource {
+            #expect(iPhone.probe.actions["phone.retry"] != nil)
+        } else {
+            // 没有会员模块的构建没有手机遥控：这一页不出现，只回到选择遥控器来源。
+            #expect(iPhone.probe.actions["phone.retry"] == nil)
+            #expect(iPhone.probe.actions["control-source.xiaomi_remote.rc001"] != nil)
+        }
 
         let web = try OnboardingOffscreenFixture(
             step: .remote,
@@ -2446,7 +2452,13 @@ struct OnboardingFlowTests {
             voiceTool: .doubao
         )
         defer { web.close() }
-        #expect(web.probe.actions["web.retry"] != nil)
+        if offscreenFixtureHasCompanionRemoteSource {
+            #expect(web.probe.actions["web.retry"] != nil)
+        } else {
+            // 网页遥控同理：没有会员模块时不出现网页页，回到选择遥控器来源。
+            #expect(web.probe.actions["web.retry"] == nil)
+            #expect(web.probe.actions["control-source.xiaomi_remote.rc001"] != nil)
+        }
     }
 
     @Test @MainActor func appleCompanionRetryGoesThroughTheMembershipGateAgain() throws {
@@ -4198,7 +4210,9 @@ struct OnboardingFlowTests {
             voiceTool: .doubao
         )
         defer { web.close() }
-        invoke("web.retry", on: web)
+        if offscreenFixtureHasCompanionRemoteSource {
+            invoke("web.retry", on: web)
+        }
         invokeIfPresent("recovery.remote.not_found", on: web)
         invokeIfPresent("diagnostics.copy", on: web)
         invoke("back", on: web)
@@ -4336,6 +4350,13 @@ struct OnboardingFlowTests {
             outputAtObservation: observation
         )
     }
+}
+
+/// 构建里是否带手机 / 网页遥控来源。公开构建只有实体遥控器：手机页与网页页不可达，
+/// 旧流程遗留的 controlMethod 在向导里回到选择遥控器来源。
+private var offscreenFixtureHasCompanionRemoteSource: Bool {
+    OnboardingBuildCapabilities.availableControlSources(siriRemoteComponentAvailable: false)
+        .contains { $0 == .appleCompanion || $0 == .webRemote }
 }
 
 @MainActor

@@ -185,15 +185,17 @@ Windows 与网络控制入口未修改，保留稳定基线检查。
 失败判定：任何一个逗号之外还出现音量变化、音量浮层、额外字符、键盘音量被吞，或松键后音量连发。
 删除映射后的恢复回归仍按用例 5 执行。
 
-## 用例 7：方向键单次按下只移动一格（Intel 重点）
+## 用例 7：方向键单次按下只移动一格，App 切换器与上下文菜单不被提交
 
 适用：2026-11-07 之后把方向键纳入事件级兜底的包。更早的包方向键只靠源头映射，
-在独占失败、映射回读一致的 Intel 机器上一次按下会移动两格。
-必须在 Intel Mac 上执行；Apple Silicon 上源头映射通常能真正阻断原生投递，不能替代。
+在独占失败、映射回读一致的机器上一次按下会移动两格。
 
-注意：方向键兜底默认**只在 Intel 构建启用**（`#if arch(x86_64)`）。Apple Silicon 包上
-看到「没有 `HID FILTER arm events=key1xx`」是预期行为，不是修复缺失；判定 Apple Silicon
-只看行为（每次一格、键盘方向键不被吞）。
+注意：2026-11-27 起方向键兜底**在所有架构默认启用**（`HIDRemoteMonitor.assumeNativeKeyLeak`
+默认 true，依据是 Apple Silicon 上同样观察到「映射回读通过后仍投递原生方向键」，见
+`Bugs/2026-11-27-native-arrow-leak-commits-app-switcher.md`）。启动日志
+`HID FILTER native_leak_assumed=true` 表示这一层生效；`false` 说明本机被显式关掉
+（`defaults write com.hd838a.RemoteMic assumeNativeKeyLeak -bool false`），此时 Apple Silicon
+上看不到 `HID FILTER arm events=key1xx` 是预期行为。
 
 1. 前置确认：日志里 `HID CONNECTED mode=monitored`、
    `HID NATIVE MAPPING phase=prepare result=verified`，即非独占且映射回读一致。
@@ -201,7 +203,8 @@ Windows 与网络控制入口未修改，保留稳定基线检查。
 3. 按住左方向键 2 秒后松开：按配置的重复策略移动，松开立即停止，速度不得翻倍。
 4. 每次方向键操作后立刻按一次电脑键盘的方向键，键盘必须正常生效；
    连续两次都被吞判失败，仅紧邻窗口期的一次被吞不算失败。
-5. 触发 Command-Tab 会话后按左右键，高亮每次只移动一格。
+5. 触发 Command-Tab 会话后按左右键，高亮每次只移动一格，且切换器保持打开直到按 OK 或点选；
+   用菜单键打开上下文菜单后按方向键，菜单必须保持打开。
 6. 反向边界：关闭「按键映射」或在映射未生效的设备上，默认左右动作仍应由系统原生事件完成，
    每次按下同样只移动一格（不得变成零格）。
 

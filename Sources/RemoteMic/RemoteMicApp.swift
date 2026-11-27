@@ -945,6 +945,10 @@ private final class RemoteMicAppDelegate: NSObject, NSApplicationDelegate, NSMen
             self?.refreshStatusItemPresentation()
         }
         .store(in: &subscriptions)
+        model.$isMouseModeActive.removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.refreshStatusItemPresentation() }
+            .store(in: &subscriptions)
 
         Publishers.CombineLatest4(
             model.$connectionStatus,
@@ -1145,21 +1149,29 @@ private final class RemoteMicAppDelegate: NSObject, NSApplicationDelegate, NSMen
 
     private func refreshStatusItemPresentation() {
         guard let button = statusItem?.button else { return }
-        let description = LocalizedMessage(
-            statusItemPresentation.descriptionKey,
-            arguments: [localization.text("app.name")]
-        ).text(using: localization)
-        statusItemPresentation.apply(to: button, description: description)
+        // 鼠标模式用高亮图标提示；它不是连接状态，退出后回到原呈现。
+        // 语音时长警告 / 严重状态更紧急，鼠标模式不盖住它们。
+        let presentation = StatusItemPresentation.resolvingMouseMode(
+            base: statusItemPresentation,
+            isMouseModeActive: model.isMouseModeActive
+        )
+        let description = presentation == .mouseMode
+            ? localization.text("status_item.mouse_mode_accessibility")
+            : LocalizedMessage(
+                presentation.descriptionKey,
+                arguments: [localization.text("app.name")]
+            ).text(using: localization)
+        presentation.apply(to: button, description: description)
         updateStatusItemWarningBlinking(button: button)
-        guard appliedStatusItemPresentation != statusItemPresentation else { return }
+        guard appliedStatusItemPresentation != presentation else { return }
         statusItemOperationID &+= 1
         AppLogger.shared.write(
             "UI STATUS_ITEM operation_id=\(statusItemOperationID) phase=completed result=applied " +
                 "from=\(appliedStatusItemPresentation?.rawValue ?? "none") " +
-                "to=\(statusItemPresentation.rawValue) " +
+                "to=\(presentation.rawValue) " +
                 "rendering=\(button.image == nil ? "text" : "image")"
         )
-        appliedStatusItemPresentation = statusItemPresentation
+        appliedStatusItemPresentation = presentation
     }
 
     private func updateStatusItemWarningBlinking(button: NSStatusBarButton) {

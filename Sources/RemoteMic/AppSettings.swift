@@ -316,6 +316,7 @@ final class AppSettings: ObservableObject {
         static let lastUserSelectedInputDeviceUID = "lastUserSelectedInputDeviceUID"
         static let lastKnownAudioDeviceUID = "lastKnownAudioDeviceUID"
         static let customMappingEnabled = "customMappingEnabled"
+        static let mouseModeTuning = "mouseModeTuning"
         static let legacyExclusiveHID = "exclusiveHID"
         static let buttonBindings = "buttonBindings"
         static let buttonShortcuts = "buttonShortcuts"
@@ -475,9 +476,23 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    /// 鼠标模式的速度、加速时长、双击窗口与长按时长。四组都是三档预设，
+    /// 只影响鼠标模式内的光标移动与确定键手势，不进键位绑定，也不进便携配置。
+    @Published var mouseModeTuning: MouseModeTuning = .standard {
+        didSet {
+            guard !isLoadingStoredSettings else { return }
+            if let data = try? JSONEncoder().encode(mouseModeTuning) {
+                defaults.set(data, forKey: Keys.mouseModeTuning)
+            }
+        }
+    }
+
     func setBaseBinding(_ configured: ConfiguredButtonAction, for button: RemoteButton,
                         trigger: ButtonTrigger, profileID: UUID?) {
-        unifiedBaseBindings.removeAll { $0.remoteProfileID == profileID && $0.button == button && $0.trigger == trigger }
+        unifiedBaseBindings.removeAll {
+            $0.mode == .keyboard && $0.remoteProfileID == profileID
+                && $0.button == button && $0.trigger == trigger
+        }
         unifiedBaseBindings.append(UnifiedButtonBinding(remoteProfileID: profileID, button: button,
                                                         trigger: trigger, configured: configured))
         guard profileID == selectedRemoteProfileID else { return }
@@ -501,13 +516,17 @@ final class AppSettings: ObservableObject {
         guard let data = defaults.data(forKey: "unifiedBaseBindings"),
               let stored = try? JSONDecoder().decode([UnifiedButtonBinding].self, from: data)
         else { return false }
-        return stored.first { $0.remoteProfileID == profileID && $0.button == button && $0.trigger == trigger }?.configured == configured
+        return stored.first {
+            $0.mode == .keyboard && $0.remoteProfileID == profileID
+                && $0.button == button && $0.trigger == trigger
+        }?.configured == configured
     }
 
     func hasExplicitBaseBinding(for button: RemoteButton, trigger: ButtonTrigger,
                                 profileID: UUID?) -> Bool {
         unifiedBaseBindings.contains {
-            ($0.remoteProfileID == profileID || $0.remoteProfileID == nil) &&
+            $0.mode == .keyboard &&
+                ($0.remoteProfileID == profileID || $0.remoteProfileID == nil) &&
                 $0.button == button && $0.trigger == trigger
         }
     }
@@ -1343,6 +1362,10 @@ final class AppSettings: ObservableObject {
             from: defaults, corrupted: &corruptedKeys
         ) ?? []
         let scopedBindingsReadable = !corruptedKeys.contains("unifiedBaseBindings")
+        mouseModeTuning = Self.decodeSetting(
+            MouseModeTuning.self, forKey: Keys.mouseModeTuning,
+            from: defaults, corrupted: &corruptedKeys
+        ) ?? .standard
         let storedRemoteProfilesData = defaults.data(forKey: Keys.remoteDeviceProfiles)
         if
             let decoded = Self.decodeSetting(
@@ -1858,10 +1881,12 @@ final class AppSettings: ObservableObject {
         trigger: ButtonTrigger
     ) -> ConfiguredButtonAction {
         if let binding = unifiedBaseBindings.first(where: {
-            $0.remoteProfileID == selectedRemoteProfileID && $0.button == button && $0.trigger == trigger
+            $0.mode == .keyboard && $0.remoteProfileID == selectedRemoteProfileID
+                && $0.button == button && $0.trigger == trigger
         }) { return binding.configured }
         if let binding = unifiedBaseBindings.first(where: {
-            $0.remoteProfileID == nil && $0.button == button && $0.trigger == trigger
+            $0.mode == .keyboard && $0.remoteProfileID == nil
+                && $0.button == button && $0.trigger == trigger
         }) { return binding.configured }
         if trigger == .singleClick {
             return ConfiguredButtonAction(
@@ -1879,10 +1904,12 @@ final class AppSettings: ObservableObject {
         profileID: UUID?
     ) -> ConfiguredButtonAction {
         if let binding = unifiedBaseBindings.first(where: {
-            $0.remoteProfileID == profileID && $0.button == button && $0.trigger == trigger
+            $0.mode == .keyboard && $0.remoteProfileID == profileID
+                && $0.button == button && $0.trigger == trigger
         }) { return binding.configured }
         if let binding = unifiedBaseBindings.first(where: {
-            $0.remoteProfileID == nil && $0.button == button && $0.trigger == trigger
+            $0.mode == .keyboard && $0.remoteProfileID == nil
+                && $0.button == button && $0.trigger == trigger
         }) { return binding.configured }
         guard let profileID, profileID != selectedRemoteProfileID,
               let profile = remoteDeviceProfiles.first(where: { $0.id == profileID })
@@ -1908,6 +1935,87 @@ final class AppSettings: ObservableObject {
         (configuredActionOverride?(profileID, button, trigger)
             ?? configuredBaseAction(for: button, trigger: trigger, profileID: profileID))
             .normalizedForExecution
+    }
+
+    // MARK: - 分模式键位（键盘模式 / 鼠标模式）
+
+    /// 鼠标模式目前只接管这几个按键；其余按键在两种模式下共用键盘键位。
+    static let mouseModeButtons: Set<RemoteButton> = [.up, .down, .left, .right, .ok, .back]
+
+    static func supportsMouseModeBinding(_ button: RemoteButton) -> Bool {
+        mouseModeButtons.contains(button)
+    }
+
+    /// 鼠标模式的默认绑定，等于引入分模式键位之前硬编码在鼠标模式里的行为。
+    /// 用户没有单独配置时用它，界面上也能看出默认值是什么。
+    static func defaultMouseModeAction(
+        for button: RemoteButton,
+        trigger: ButtonTrigger
+    ) -> ConfiguredButtonAction {
+        switch (button, trigger) {
+        case (.up, .singleClick), (.down, .singleClick),
+             (.left, .singleClick), (.right, .singleClick):
+            return ConfiguredButtonAction(action: .mouseCursorMove, shortcut: nil)
+        case (.ok, .singleClick):
+            return ConfiguredButtonAction(action: .mouseLeftClick, shortcut: nil)
+        case (.ok, .doubleClick):
+            return ConfiguredButtonAction(action: .mouseRightClick, shortcut: nil)
+        case (.ok, .longPress):
+            return ConfiguredButtonAction(action: .returnKey, shortcut: nil)
+        case (.back, .singleClick):
+            return ConfiguredButtonAction(action: .exitMouseMode, shortcut: nil)
+        default:
+            return .disabled
+        }
+    }
+
+    func configuredMouseModeAction(for button: RemoteButton, trigger: ButtonTrigger,
+                                   profileID: UUID?) -> ConfiguredButtonAction {
+        if let binding = unifiedBaseBindings.first(where: {
+            $0.mode == .mouse && $0.remoteProfileID == profileID
+                && $0.button == button && $0.trigger == trigger
+        }) { return binding.configured.normalizedForExecution }
+        if let binding = unifiedBaseBindings.first(where: {
+            $0.mode == .mouse && $0.remoteProfileID == nil
+                && $0.button == button && $0.trigger == trigger
+        }) { return binding.configured.normalizedForExecution }
+        return Self.defaultMouseModeAction(for: button, trigger: trigger).normalizedForExecution
+    }
+
+    func configuredMouseModeAction(for button: RemoteButton,
+                                   trigger: ButtonTrigger) -> ConfiguredButtonAction {
+        configuredMouseModeAction(for: button, trigger: trigger, profileID: selectedRemoteProfileID)
+    }
+
+    func hasExplicitMouseModeBinding(for button: RemoteButton, trigger: ButtonTrigger,
+                                     profileID: UUID?) -> Bool {
+        unifiedBaseBindings.contains {
+            $0.mode == .mouse && ($0.remoteProfileID == profileID || $0.remoteProfileID == nil)
+                && $0.button == button && $0.trigger == trigger
+        }
+    }
+
+    func setMouseModeBinding(_ configured: ConfiguredButtonAction, for button: RemoteButton,
+                             trigger: ButtonTrigger, profileID: UUID?) {
+        unifiedBaseBindings.removeAll {
+            $0.mode == .mouse && $0.remoteProfileID == profileID
+                && $0.button == button && $0.trigger == trigger
+        }
+        unifiedBaseBindings.append(UnifiedButtonBinding(
+            remoteProfileID: profileID,
+            button: button,
+            trigger: trigger,
+            mode: .mouse,
+            configured: configured
+        ))
+    }
+
+    /// 恢复鼠标模式某个触发的默认绑定：删掉显式项，回落到 `defaultMouseModeAction`。
+    func resetMouseModeBinding(for button: RemoteButton, trigger: ButtonTrigger, profileID: UUID?) {
+        unifiedBaseBindings.removeAll {
+            $0.mode == .mouse && ($0.remoteProfileID == profileID || $0.remoteProfileID == nil)
+                && $0.button == button && $0.trigger == trigger
+        }
     }
 
     var selectedRemoteProfile: RemoteDeviceProfile? {
@@ -2907,7 +3015,9 @@ final class AppSettings: ObservableObject {
         unifiedBaseBindings.removeAll { $0.remoteProfileID == selectedRemoteProfileID }
         // Legacy unscoped macros remain available on other devices after this reset.
         if let device = selectedRemoteProfileID {
-            for inherited in unifiedBaseBindings.filter({ $0.remoteProfileID == nil }) {
+            // 只重建键盘键位：鼠标模式键位不属于默认键位，删掉本设备的显式项后
+            // 直接回落到鼠标模式默认值，不能按默认键盘键位重新写一份。
+            for inherited in unifiedBaseBindings.filter({ $0.remoteProfileID == nil && $0.mode == .keyboard }) {
                 setBaseBinding(ConfiguredButtonAction(
                     action: inherited.trigger == .singleClick ? Self.defaultBindings[inherited.button] ?? .disabled : .disabled,
                     shortcut: nil), for: inherited.button, trigger: inherited.trigger, profileID: device)
@@ -4773,6 +4883,9 @@ final class AppSettings: ObservableObject {
             let profileID: UUID
             let button: RemoteButton
             let trigger: ButtonTrigger
+            /// 键盘模式和鼠标模式对同一个按键各有绑定，键必须带上模式，
+            /// 否则迁移一台设备时鼠标模式绑定会被当成冲突丢掉。
+            let mode: MappingMode
         }
         var result: [UnifiedButtonBinding] = []
         var occupied = Set<ScopedBindingKey>()
@@ -4786,7 +4899,8 @@ final class AppSettings: ObservableObject {
             occupied.insert(ScopedBindingKey(
                 profileID: profileID,
                 button: binding.button,
-                trigger: binding.trigger
+                trigger: binding.trigger,
+                mode: binding.mode
             ))
         }
         var moved = 0
@@ -4800,7 +4914,8 @@ final class AppSettings: ObservableObject {
             let key = ScopedBindingKey(
                 profileID: targetID,
                 button: binding.button,
-                trigger: binding.trigger
+                trigger: binding.trigger,
+                mode: binding.mode
             )
             guard occupied.insert(key).inserted else {
                 conflicts.append(remapped)

@@ -22,11 +22,15 @@ enum StatusItemPresentation: String, Equatable {
     case streaming
     case streamingWarning = "streaming_warning"
     case streamingCritical = "streaming_critical"
+    /// 遥控器鼠标模式进行中。它不是连接状态：只在呈现层盖住当前状态，退出后回到原呈现。
+    case mouseMode = "mouse_mode"
 
     var descriptionKey: String {
         switch self {
         case .streamingWarning, .streamingCritical:
             return "status_item.state.streaming"
+        case .mouseMode:
+            return "status_item.mouse_mode_accessibility"
         default:
             return "status_item.state.\(rawValue)"
         }
@@ -50,6 +54,17 @@ enum StatusItemPresentation: String, Equatable {
         if physicalConnected || phoneConnected || watchConnected { return .connected }
         if case .connected = webState { return .connected }
         return .disconnected
+    }
+
+    /// 鼠标模式只盖住普通的连接 / 语音状态。语音时长警告和严重状态更紧急，保持原样。
+    static func resolvingMouseMode(
+        base: StatusItemPresentation,
+        isMouseModeActive: Bool
+    ) -> Self {
+        guard isMouseModeActive, base != .streamingWarning, base != .streamingCritical else {
+            return base
+        }
+        return .mouseMode
     }
 
     static func publisher(
@@ -82,8 +97,9 @@ enum StatusItemPresentation: String, Equatable {
     @MainActor
     func apply(to button: NSStatusBarButton, description: String) {
         let isStreaming = self == .streaming || self == .streamingWarning || self == .streamingCritical
-        let resourceName = isStreaming ? "StatusIconActiveTemplate" : "StatusIconTemplate"
-        let fallbackSymbol = isStreaming ? "mic.fill" : "dot.radiowaves.left.and.right"
+        let isActive = isStreaming || self == .mouseMode
+        let resourceName = isActive ? "StatusIconActiveTemplate" : "StatusIconTemplate"
+        let fallbackSymbol = isActive ? "mic.fill" : "dot.radiowaves.left.and.right"
         // Named images are shared. Keep localized descriptions local to this status item.
         let templateImage = (NSImage(named: NSImage.Name(resourceName))?.copy() as? NSImage)
             ?? NSImage(systemSymbolName: fallbackSymbol, accessibilityDescription: description)

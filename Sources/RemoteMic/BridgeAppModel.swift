@@ -658,6 +658,7 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
     @Published private(set) var audioStatus = LocalizedMessage("audio.output.none_selected")
     @Published private(set) var isRemoteVoiceRecoveryInFlight = false
     @Published private(set) var isStreaming = false
+    @Published private(set) var isMouseModeActive = false
     @Published private(set) var voiceSessionWarningLevel: VoiceSessionWarningLevel = .none
     @Published private(set) var isConnected = false
     @Published private(set) var isVoiceTriggerEnabled = false
@@ -932,6 +933,32 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
             self?.handleVoiceInputDestinationState(state)
         }
     )
+    private lazy var mouseModeController: MouseModeController = {
+        let controller = MouseModeController()
+        // 鼠标模式执行“鼠标模式键位”，不看键盘模式的绑定。
+        controller.actionResolver = { [weak self] button, trigger in
+            guard let self else {
+                return AppSettings.defaultMouseModeAction(for: button, trigger: trigger)
+            }
+            return self.settings.configuredMouseModeAction(for: button, trigger: trigger)
+        }
+        controller.performAction = { [weak self] configured in
+            self?.performExternalConfiguredAction(configured)
+        }
+        controller.tuning = { [weak self] in
+            self?.settings.mouseModeTuning ?? .standard
+        }
+        controller.onStateChange = { [weak self] isActive in
+            guard let self else { return }
+            self.isMouseModeActive = isActive
+            // 鼠标模式接管方向键、OK 与返回键的边沿：进出模式时清掉在途手势、连发和单击锁存，
+            // 避免切换前的按下在切换后补出一个幻影动作。
+            let reason = isActive ? "mouse_mode_entered" : "mouse_mode_exited"
+            self.hidMonitors.values.forEach { $0.cancelPendingButtonActions(reason: reason) }
+            self.discoveryHIDMonitor?.cancelPendingButtonActions(reason: reason)
+        }
+        return controller
+    }()
     private lazy var voiceFnTapSession = VoiceFnTapSessionController(
         destinationReadiness: { [weak self] completion in
             self?.voiceInputDestinationCoordinator.waitUntilReady(completion: completion) ?? .immediate
@@ -4593,6 +4620,7 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
     }
 
     private func stopHIDMonitors() {
+        mouseModeController.deactivate(reason: "hid_monitors_stopped")
         hidMonitors.values.forEach { $0.stop() }
         discoveryHIDMonitor?.stop()
         hidMonitors.removeAll()
@@ -4808,6 +4836,12 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
             guard let self else { return }
             if let profileID { self.selectRemoteProfile(profileID) }
             self.performInternalAction(action, source: Self.commonPhraseHIDSource(profileID))
+        }
+        monitor.mouseModeEdgeHandler = { [weak self] button, edge in
+            self?.mouseModeController.handle(button: button, edge: edge) ?? false
+        }
+        monitor.onMonitoringEnded = { [weak self] reason in
+            self?.mouseModeController.deactivate(reason: reason)
         }
         return monitor
     }
@@ -9557,6 +9591,9 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
         if action == .openCommonPhrases {
             cancelPendingCommonPhraseButtonActions()
             return membershipFeature.openCommonPhrases(source: source)
+        }
+        if action == .toggleMouseMode {
+            return mouseModeController.toggle()
         }
         guard action == .toggleLongRecording else { return false }
         guard action.isEnabled(

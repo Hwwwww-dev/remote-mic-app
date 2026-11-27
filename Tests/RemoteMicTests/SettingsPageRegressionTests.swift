@@ -456,8 +456,14 @@ struct SettingsPageRegressionTests {
 
     @Test func legacyPermissionNavigationResolvesToTheConsolidatedSettingsPage() {
         #expect(SettingsPageBehavior.visibleSection(for: .permissions) == .about)
-        for section in SettingsSection.allCases where section != .permissions {
+        // 没有会员模块的构建没有常用语页：入口回落到「按键」页。
+        let redirected: Set<SettingsSection> = MembershipBuildCapabilities.isModulePresent
+            ? [.permissions] : [.permissions, .commonPhrases]
+        for section in SettingsSection.allCases where !redirected.contains(section) {
             #expect(SettingsPageBehavior.visibleSection(for: section) == section)
+        }
+        if !MembershipBuildCapabilities.isModulePresent {
+            #expect(SettingsPageBehavior.visibleSection(for: .commonPhrases) == .mapping)
         }
     }
 

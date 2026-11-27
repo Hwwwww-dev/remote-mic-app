@@ -371,7 +371,8 @@ struct KeyboardEventSuppressorTests {
         let monitor = HIDRemoteMonitor(
             settings: settings, eventSuppressor: suppressor, ownsEventSuppressor: false,
             runtimePermissions: { true }, actionPerformer: { _, _, _ in performed += 1; return true },
-            diagnosticLogger: { _ in }, prepareNativeKeys: { true }
+            diagnosticLogger: { _ in }, prepareNativeKeys: { true },
+            assumesNativeKeyLeak: false
         )
         monitor.connectSimulatedDevice(
             fingerprint: "neutralized-remote", profileID: settings.selectedRemoteProfileID
@@ -397,6 +398,56 @@ struct KeyboardEventSuppressorTests {
         for native in button.nativeEvents {
             let up = try nativeEvent(native, down: false)
             #expect(!suppressor.handle(type: up.type, event: up))
+        }
+    }
+
+    /// 泄漏现场也会为映射键开拦截窗口（每次按下 0.5 秒，见
+    /// `leakedNativeDirectionalIsSuppressedWhenTheBuildAssumesALeak`），
+    /// 但会话结束后必须全部释放：停止或断开之后再到达的同码键要放行，
+    /// 否则用户实体键盘上的方向键、菜单键会被永久吞掉。
+    @Test(arguments: [RemoteButton.up, .menu, .ok])
+    func leakedNativeKeysReleaseTheirCreditsWhenTheSessionEnds(_ button: RemoteButton) throws {
+        let suite = "KeyboardEventSuppressorTests.leakedCredits.\(UUID().uuidString)"
+        let defaults = try #require(TestUserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = AppSettings(defaults: defaults)
+        settings.customMappingEnabled = true
+        settings.setAction(.customShortcut, for: button)
+        settings.setShortcut(
+            CustomKeyboardShortcut(keyCode: 43, modifierFlags: [], keyLabel: ","), for: button
+        )
+        settings.setAction(.disabled, for: button, trigger: .doubleClick)
+        settings.setAction(.disabled, for: button, trigger: .longPress)
+        settings.setAllowsRapidPress(true, for: button)
+        let suppressor = KeyboardEventSuppressor(logger: { _ in })
+        var performed = 0
+        let monitor = HIDRemoteMonitor(
+            settings: settings, eventSuppressor: suppressor, ownsEventSuppressor: false,
+            runtimePermissions: { true }, actionPerformer: { _, _, _ in performed += 1; return true },
+            diagnosticLogger: { _ in }, prepareNativeKeys: { true },
+            assumesNativeKeyLeak: true
+        )
+        #expect(monitor.connectSimulatedDevice(
+            fingerprint: "leaked-credits",
+            profileID: settings.selectedRemoteProfileID,
+            isSeized: false
+        ))
+        for _ in 0..<3 {
+            monitor.handleSimulatedReport(reportID: 1, data: Data([UInt8(button.hidUsage), 0, 0, 0, 0, 0]))
+            for native in button.nativeEvents {
+                let nativeDown = try nativeEvent(native, down: true)
+                #expect(suppressor.handle(type: nativeDown.type, event: nativeDown))
+            }
+            monitor.handleSimulatedReport(reportID: 1, data: Data(repeating: 0, count: 6))
+        }
+        #expect(performed == 3)
+        monitor.disconnectSimulatedDevice()
+        suppressor.stop()
+        for native in button.nativeEvents {
+            for isDown in [true, false] {
+                let late = try nativeEvent(native, down: isDown)
+                #expect(!suppressor.handle(type: late.type, event: late))
+            }
         }
     }
 
@@ -574,7 +625,7 @@ struct KeyboardEventSuppressorTests {
             runtimePermissions: { true }, actionPerformer: { _, _, _ in performed += 1; return true },
             frontmostBundleIdentifier: { PresetApplication.safari.bundleIdentifier },
             diagnosticLogger: { _ in }, prepareNativeKeys: { true },
-            directionalNativeFallback: false
+            directionalNativeFallback: false, assumesNativeKeyLeak: false
         )
         #expect(monitor.connectSimulatedDevice(
             fingerprint: "apple-silicon-directional",
@@ -587,6 +638,56 @@ struct KeyboardEventSuppressorTests {
         #expect(!suppressor.handle(type: down.type, event: down))
         monitor.handleSimulatedReport(reportID: 1, data: Data(repeating: 0, count: 6))
         #expect(!suppressor.handle(type: up.type, event: up))
+        #expect(performed == 1)
+    }
+
+    /// 2026-11-27 现场（Apple Silicon、macOS 27.0.1、RC003 monitored）：映射回读通过后
+    /// tap 里仍然收到原生方向键，与按键边沿只差 1–8 ms，每次按下泄漏一次。
+    /// 后果是 App 切换器的高亮只动一格就被系统提交、上下文菜单一按方向键就关闭。
+    /// 构建按「会泄漏」处理时必须登记拦截，原生事件不能进系统。
+    @Test(arguments: [RemoteButton.left, .right, .up, .down])
+    func leakedNativeDirectionalIsSuppressedWhenTheBuildAssumesALeak(
+        _ button: RemoteButton
+    ) throws {
+        let suite = "KeyboardEventSuppressorTests.leakedDirectional.\(UUID().uuidString)"
+        let defaults = try #require(TestUserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = AppSettings(defaults: defaults)
+        settings.customMappingEnabled = true
+        let action: ButtonAction = switch button {
+        case .left: .arrowLeft
+        case .right: .arrowRight
+        case .up: .arrowUp
+        default: .arrowDown
+        }
+        settings.setAction(action, for: button)
+        settings.setAction(.disabled, for: button, trigger: .doubleClick)
+        settings.setAction(.disabled, for: button, trigger: .longPress)
+        settings.setAllowsRapidPress(true, for: button)
+        let native = try #require(button.nativeEvent)
+        let down = try nativeEvent(native, down: true)
+        let up = try nativeEvent(native, down: false)
+        let suppressor = KeyboardEventSuppressor(logger: { _ in })
+        var performed = 0
+        let monitor = HIDRemoteMonitor(
+            settings: settings, eventSuppressor: suppressor, ownsEventSuppressor: false,
+            runtimePermissions: { true }, actionPerformer: { _, _, _ in performed += 1; return true },
+            frontmostBundleIdentifier: { PresetApplication.safari.bundleIdentifier },
+            diagnosticLogger: { _ in }, prepareNativeKeys: { true },
+            directionalNativeFallback: false, assumesNativeKeyLeak: true
+        )
+        #expect(monitor.connectSimulatedDevice(
+            fingerprint: "leaked-directional",
+            profileID: settings.selectedRemoteProfileID,
+            isSeized: false
+        ))
+        defer { monitor.disconnectSimulatedDevice() }
+
+        monitor.handleSimulatedReport(reportID: 1, data: Data([UInt8(button.hidUsage), 0, 0, 0, 0, 0]))
+        #expect(suppressor.handle(type: down.type, event: down))
+        monitor.handleSimulatedReport(reportID: 1, data: Data(repeating: 0, count: 6))
+        #expect(suppressor.handle(type: up.type, event: up))
+        // 拦截只吃掉泄漏的那一条，动作仍然只执行一次。
         #expect(performed == 1)
     }
 
@@ -616,7 +717,7 @@ struct KeyboardEventSuppressorTests {
             runtimePermissions: { true }, actionPerformer: { _, _, _ in performed += 1; return true },
             frontmostBundleIdentifier: { PresetApplication.safari.bundleIdentifier },
             diagnosticLogger: { _ in },
-            directionalNativeFallback: false
+            directionalNativeFallback: false, assumesNativeKeyLeak: false
         )
         #expect(monitor.connectSimulatedDevice(
             fingerprint: "unneutralized-directional",
@@ -636,36 +737,70 @@ struct KeyboardEventSuppressorTests {
         // 仍会先于主线程登记到达，必须提前拦。
         for button in [RemoteButton.up, .down, .left, .right] {
             #expect(HIDRemoteMonitor.prearmsNativeEvent(
-                for: button, seized: false, neutralized: true, directionalFallback: true
+                for: button, seized: false, neutralized: true, directionalFallback: true,
+                assumeNativeKeyLeak: false
             ), Comment(rawValue: button.rawValue))
         }
         // 映射未生效的 monitored 会话靠原生透传移动，不能抢先登记。
         #expect(!HIDRemoteMonitor.prearmsNativeEvent(
-            for: .left, seized: false, neutralized: false, directionalFallback: true
+            for: .left, seized: false, neutralized: false, directionalFallback: true,
+            assumeNativeKeyLeak: false
         ))
         // 独占时系统收不到原生事件，不需要登记。
         #expect(!HIDRemoteMonitor.prearmsNativeEvent(
-            for: .left, seized: true, neutralized: true, directionalFallback: true
+            for: .left, seized: true, neutralized: true, directionalFallback: true,
+            assumeNativeKeyLeak: false
         ))
         // Apple Silicon 等没有泄漏证据的构建不登记，避免开出吞掉键盘方向键的窗口。
         #expect(!HIDRemoteMonitor.prearmsNativeEvent(
-            for: .left, seized: false, neutralized: true, directionalFallback: false
+            for: .left, seized: false, neutralized: true, directionalFallback: false,
+            assumeNativeKeyLeak: false
         ))
         // TV 与音量沿用原有范围：始终由 App 执行，与方向键开关无关。
         for button in [RemoteButton.tv, .volumeUp, .volumeDown] {
             #expect(HIDRemoteMonitor.prearmsNativeEvent(
-                for: button, seized: false, neutralized: false, directionalFallback: false
+                for: button, seized: false, neutralized: false, directionalFallback: false,
+                assumeNativeKeyLeak: false
             ), Comment(rawValue: button.rawValue))
             #expect(!HIDRemoteMonitor.prearmsNativeEvent(
-                for: button, seized: true, neutralized: true, directionalFallback: true
+                for: button, seized: true, neutralized: true, directionalFallback: true,
+                assumeNativeKeyLeak: false
             ), Comment(rawValue: button.rawValue))
         }
         // 其余普通键不提前登记，避免吞掉实体键盘的同码按键。
         #expect(!HIDRemoteMonitor.prearmsNativeEvent(
-            for: .ok, seized: false, neutralized: true, directionalFallback: true
+            for: .ok, seized: false, neutralized: true, directionalFallback: true,
+            assumeNativeKeyLeak: false
         ))
         #expect(!HIDRemoteMonitor.prearmsNativeEvent(
-            for: .home, seized: false, neutralized: true, directionalFallback: true
+            for: .home, seized: false, neutralized: true, directionalFallback: true,
+            assumeNativeKeyLeak: false
+        ))
+    }
+
+    /// 泄漏现场（2026-11-27）：回读生效后原生事件照样投递，而且比主线程登记早 1–8 ms，
+    /// 所有带原生事件的映射键都要在报告线程提前登记，否则拦截永远晚一步。
+    @Test func leakedNativeBuildPrearmsEveryMappedButton() {
+        for button in [RemoteButton.up, .down, .left, .right, .ok, .menu, .home, .tv, .volumeUp] {
+            #expect(HIDRemoteMonitor.prearmsNativeEvent(
+                for: button, seized: false, neutralized: true, directionalFallback: false,
+                assumeNativeKeyLeak: true
+            ), Comment(rawValue: button.rawValue))
+        }
+        // 独占会话收不到原生事件，不必登记。
+        #expect(!HIDRemoteMonitor.prearmsNativeEvent(
+            for: .left, seized: true, neutralized: true, directionalFallback: false,
+            assumeNativeKeyLeak: true
+        ))
+        // 映射未生效时原生事件就是预期的那次投递，提前登记会把它吞掉。
+        #expect(!HIDRemoteMonitor.prearmsNativeEvent(
+            for: .left, seized: false, neutralized: false, directionalFallback: false,
+            assumeNativeKeyLeak: true
+        ))
+        // 返回键没有原生事件（由 App 独占解释），不登记。
+        #expect(!HIDRemoteMonitor.prearmsNativeEvent(
+            for: .back, seized: false, neutralized: true, directionalFallback: false,
+            assumeNativeKeyLeak: true
         ))
     }
 

@@ -988,6 +988,19 @@ enum ButtonAction: String, CaseIterable, Codable, Identifiable {
     case focusInput
     case openCustomApplication
     case toggleLongRecording
+    case mouseLeftClick
+    case mouseRightClick
+    case mouseMiddleClick
+    case toggleMouseMode
+    /// 鼠标模式内部的按键动作：按住方向键按加速曲线移动光标。
+    /// 只在鼠标模式的绑定里可选；键盘模式的动作列表不出现它。
+    case mouseCursorMove
+    /// 鼠标模式内部的按键动作：退出鼠标模式。默认绑在返回键单击上。
+    case exitMouseMode
+    case mouseMoveUp
+    case mouseMoveDown
+    case mouseMoveLeft
+    case mouseMoveRight
     case openCommonPhrases
     case openRemoteMic
     case openCodex
@@ -1067,6 +1080,16 @@ enum ButtonAction: String, CaseIterable, Codable, Identifiable {
         case .openCustomApplication: return localization.text("action.open_custom_application")
         case .openCommonPhrases: return localization.text("action.open_common_phrases")
         case .toggleLongRecording: return localization.text("action.toggle_long_recording")
+        case .mouseLeftClick: return localization.text("action.mouse_left_click")
+        case .mouseRightClick: return localization.text("action.mouse_right_click")
+        case .mouseMiddleClick: return localization.text("action.mouse_middle_click")
+        case .toggleMouseMode: return localization.text("action.toggle_mouse_mode")
+        case .mouseCursorMove: return localization.text("action.mouse_cursor_move")
+        case .exitMouseMode: return localization.text("action.exit_mouse_mode")
+        case .mouseMoveUp: return localization.text("action.mouse_move_up")
+        case .mouseMoveDown: return localization.text("action.mouse_move_down")
+        case .mouseMoveLeft: return localization.text("action.mouse_move_left")
+        case .mouseMoveRight: return localization.text("action.mouse_move_right")
         case .openRemoteMic: return localization.text("action.open_remote_mic")
         case .openCodex: return localization.text("action.open_codex")
         case .openWorkBuddy: return localization.text("action.open_workbuddy")
@@ -1242,7 +1265,10 @@ enum ButtonAction: String, CaseIterable, Codable, Identifiable {
         case .showDesktop, .contextMenu, .appSwitcher, .missionControl, .applicationWindows,
              .spaceLeft, .spaceRight, .lockScreen, .screenshot,
              .volumeUp, .volumeDown, .volumeMute,
-             .playPause, .previousCommandLeft, .nextCommandRight, .toggleLongRecording:
+             .playPause, .previousCommandLeft, .nextCommandRight, .toggleLongRecording,
+             .mouseLeftClick, .mouseRightClick, .mouseMiddleClick, .toggleMouseMode,
+             .mouseCursorMove, .exitMouseMode,
+             .mouseMoveUp, .mouseMoveDown, .mouseMoveLeft, .mouseMoveRight:
             return .systemAndMedia
         case .customShortcut:
             return .customShortcuts
@@ -1317,7 +1343,13 @@ enum ButtonAction: String, CaseIterable, Codable, Identifiable {
     }
 
     var isAppInternal: Bool {
-        self == .toggleLongRecording || self == .openCommonPhrases
+        self == .toggleLongRecording || self == .toggleMouseMode || self == .openCommonPhrases
+            || self == .mouseCursorMove || self == .exitMouseMode
+    }
+
+    /// 只在鼠标模式绑定里出现的动作。键盘模式的动作列表和绑定都不应出现它们。
+    var isMouseModeOnly: Bool {
+        self == .mouseCursorMove || self == .exitMouseMode
     }
 
     func isEnabled(experimentalContinuousRecordingEnabled: Bool) -> Bool {
@@ -1327,12 +1359,18 @@ enum ButtonAction: String, CaseIterable, Codable, Identifiable {
     static func pickerActions(
         installedBundleIdentifiers: Set<String>,
         current: ButtonAction,
-        experimentalContinuousRecordingEnabled: Bool
+        experimentalContinuousRecordingEnabled: Bool,
+        mode: MappingMode = .keyboard
     ) -> [ButtonAction] {
         let actions = allCases.filter { action in
             guard action.isEnabled(
                 experimentalContinuousRecordingEnabled: experimentalContinuousRecordingEnabled
             ) else {
+                return action == current
+            }
+            // 鼠标模式专用的内部动作只在鼠标模式的编辑器里出现；已选中的保持可见，
+            // 否则切到键盘模式后动作名会变成空白。
+            if action.isMouseModeOnly, mode == .keyboard {
                 return action == current
             }
             guard let application = action.presetApplication else { return true }

@@ -5,6 +5,12 @@ import Darwin
 import Foundation
 
 enum KeyboardInjector {
+    enum MouseClickButton: String, Equatable {
+        case left
+        case right
+        case middle
+    }
+
     typealias ApplicationOpener = (
         URL,
         PresetApplication,
@@ -21,6 +27,8 @@ enum KeyboardInjector {
     typealias CmuxCommandRunner = (URL, [String], TimeInterval) -> CmuxCommandResult
     typealias KeyPoster = (CGKeyCode, CGEventFlags) -> Void
     typealias KeyStatePoster = (CGKeyCode, Bool, CGEventFlags) -> Bool
+    typealias MouseClickPoster = (MouseClickButton) -> Void
+    typealias MouseMovePoster = (CGFloat, CGFloat) -> Void
     typealias ScrollPoster = (Int32) -> Void
     typealias SystemKeyPoster = (Int32) -> Void
 
@@ -593,6 +601,8 @@ enum KeyboardInjector {
         accessibilityTrusted: () -> Bool = { isAccessibilityTrusted },
         keyPoster: KeyPoster = { postKey(code: $0, flags: $1) },
         keyStatePoster: KeyStatePoster = postKeyState,
+        mouseClickPoster: MouseClickPoster = { postMouseClick(button: $0) },
+        mouseMovePoster: MouseMovePoster = { dx, dy in _ = postMouseMove(by: CGPoint(x: dx, y: dy)) },
         scrollPoster: ScrollPoster = { postScrollWheel(lines: $0) },
         scrollPagePoster: (ScrollPageDirection, ScrollPageStep) -> ScrollPageOutcome = defaultScrollPagePoster,
         scrollEdgePoster: (ScrollEdge) -> ScrollPageOutcome = defaultScrollEdgePoster,
@@ -821,6 +831,16 @@ enum KeyboardInjector {
             postSystemKey(type: 7)
         case .playPause:
             systemKeyPoster(16)
+        case .mouseLeftClick:
+            mouseClickPoster(.left)
+        case .mouseRightClick:
+            mouseClickPoster(.right)
+        case .mouseMiddleClick:
+            mouseClickPoster(.middle)
+        case .mouseMoveUp, .mouseMoveDown, .mouseMoveLeft, .mouseMoveRight:
+            if let delta = mouseMoveDelta(for: action) {
+                mouseMovePoster(delta.x, delta.y)
+            }
         case .previousCommandLeft:
             systemKeyPoster(18)
         case .nextCommandRight:
@@ -841,7 +861,8 @@ enum KeyboardInjector {
             break
         case .openCustomApplication:
             break
-        case .toggleLongRecording, .openCommonPhrases:
+        case .toggleLongRecording, .openCommonPhrases, .toggleMouseMode, .mouseCursorMove,
+             .exitMouseMode:
             break
         case .openRemoteMic, .openCodex, .openWorkBuddy, .openClaude, .openCmux, .openWeChat, .openCursor, .openXcode,
              .openSlack, .openWeCom, .openNeteaseMusic, .openChrome, .openSafari, .openZed, .openDimAgent:
@@ -2573,7 +2594,87 @@ enum KeyboardInjector {
         return true
     }
 
-    private static func postKey(code: CGKeyCode, flags: CGEventFlags = []) {
+    /// 鼠标移动动作每按一次（或每回合连发）移动的距离，单位是屏幕点。
+    static let mouseMoveStep: CGFloat = 60
+
+    /// 鼠标移动动作对应的位移。屏幕坐标向下为正，向上移动是负的 y。
+    static func mouseMoveDelta(for action: ButtonAction) -> CGPoint? {
+        let step = mouseMoveStep
+        switch action {
+        case .mouseMoveUp: return CGPoint(x: 0, y: -step)
+        case .mouseMoveDown: return CGPoint(x: 0, y: step)
+        case .mouseMoveLeft: return CGPoint(x: -step, y: 0)
+        case .mouseMoveRight: return CGPoint(x: step, y: 0)
+        default: return nil
+        }
+    }
+
+    /// 把光标从当前位置移动 `delta`；到达屏幕边缘时停在边上。
+    @discardableResult
+    static func postMouseMove(by delta: CGPoint) -> Bool {
+        guard let origin = CGEvent(source: nil)?.location else { return false }
+        let target = CGPoint(x: origin.x + delta.x, y: origin.y + delta.y)
+        postMouseMoved(to: MouseModeController.clamped(target, to: MouseModeController.quartzScreenBounds()))
+        return true
+    }
+
+    static func postMouseClick(button: MouseClickButton, at point: CGPoint? = nil) {
+        guard let location = point ?? CGEvent(source: nil)?.location else { return }
+        let downType: CGEventType
+        let upType: CGEventType
+        let mouseButton: CGMouseButton
+        switch button {
+        case .left:
+            downType = .leftMouseDown
+            upType = .leftMouseUp
+            mouseButton = .left
+        case .right:
+            downType = .rightMouseDown
+            upType = .rightMouseUp
+            mouseButton = .right
+        case .middle:
+            downType = .otherMouseDown
+            upType = .otherMouseUp
+            mouseButton = .center
+        }
+        guard let source = CGEventSource(stateID: .hidSystemState),
+              let down = CGEvent(
+                  mouseEventSource: source,
+                  mouseType: downType,
+                  mouseCursorPosition: location,
+                  mouseButton: mouseButton
+              ),
+              let up = CGEvent(
+                  mouseEventSource: source,
+                  mouseType: upType,
+                  mouseCursorPosition: location,
+                  mouseButton: mouseButton
+              )
+        else { return }
+        if button == .middle {
+            down.setIntegerValueField(.mouseEventButtonNumber, value: 2)
+            up.setIntegerValueField(.mouseEventButtonNumber, value: 2)
+        }
+        down.setIntegerValueField(.eventSourceUserData, value: syntheticEventMarker)
+        up.setIntegerValueField(.eventSourceUserData, value: syntheticEventMarker)
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+    }
+
+    static func postMouseMoved(to point: CGPoint) {
+        guard let source = CGEventSource(stateID: .hidSystemState),
+              let event = CGEvent(
+                  mouseEventSource: source,
+                  mouseType: .mouseMoved,
+                  mouseCursorPosition: point,
+                  mouseButton: .left
+              )
+        else { return }
+        event.setIntegerValueField(.eventSourceUserData, value: syntheticEventMarker)
+        event.post(tap: .cghidEventTap)
+    }
+
+    static func postKey(code: CGKeyCode, flags: CGEventFlags = []) {
         guard let source = CGEventSource(stateID: .hidSystemState),
               let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)

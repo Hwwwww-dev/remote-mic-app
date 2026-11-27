@@ -311,6 +311,8 @@ final class HIDRemoteMonitor {
     private let restoreNativeKeys: () -> Void
     /// 方向键是否登记事件级兜底；默认按构建架构取值，测试可以显式注入。
     private let directionalNativeFallback: Bool
+    /// 回读生效后是否仍要事件级拦截，见 `assumeNativeKeyLeak`。
+    private let assumesNativeKeyLeak: Bool
     private let targetFingerprint: String?
     private let excludedFingerprints: () -> Set<String>
     private var allowedLocationIDs: Set<UInt32>? {
@@ -358,6 +360,11 @@ final class HIDRemoteMonitor {
     /// 设备级映射是否已通过回读校验。回读只证明写入成功，不证明系统已停止投递原生事件。
     private var nativeKeysNeutralized = false {
         didSet { refreshPrearmRouting() }
+    }
+    /// 事件级拦截的真实判据：映射回读已生效 **并且** 这台机器确实不再投递原生事件。
+    /// 有泄漏证据时回读生效也要登记，否则同一个码的原生事件会直接进系统。
+    private var nativeDeliveryBlocked: Bool {
+        nativeKeysNeutralized && !assumesNativeKeyLeak
     }
     /// 权限状态由主线程与权限轮询线程更新，报告线程只读这份快照。
     /// `IOHIDCheckAccess` 与 `AXIsProcessTrusted` 是同步 IPC，不能在报告回调里查询。
@@ -446,6 +453,11 @@ final class HIDRemoteMonitor {
     var onNativeMappingVerificationFailed: (() -> Void)?
     var onInputReset: ((UUID?) -> Void)?
     var onInternalAction: ((UUID?, ButtonAction) -> Void)?
+    /// 鼠标模式接管的边沿。返回 true 表示这条边沿已由鼠标模式消费：
+    /// 不进手势识别与连发，也不做原生透传，只按需登记抑制，避免同一个按键泄漏出去。
+    var mouseModeEdgeHandler: ((RemoteButton, RemoteEventEdge) -> Bool)?
+    /// 监视器停止或当前设备断开。鼠标模式不能跨断开存活，由上层退出；参数是退出原因。
+    var onMonitoringEnded: ((String) -> Void)?
     /// A voice-key down edge while the selected remote's audio link may be down.
     /// The callback only observes intent; the HID event itself is never consumed.
     var onVoiceUsageDown: ((UUID?) -> Void)?
@@ -488,6 +500,7 @@ final class HIDRemoteMonitor {
         prepareNativeKeys: (() -> Bool)? = nil,
         restoreNativeKeys: @escaping () -> Void = {},
         directionalNativeFallback: Bool = HIDRemoteMonitor.directionalNativeFallbackEnabled,
+        assumesNativeKeyLeak: Bool = HIDRemoteMonitor.assumeNativeKeyLeak,
         appSwitcherKeyStatePoster: @escaping KeyboardInjector.KeyStatePoster = KeyboardInjector.postKeyState,
         minimizedWindowRestorer: @escaping (
             String?,
@@ -586,6 +599,7 @@ final class HIDRemoteMonitor {
         self.prepareNativeKeys = prepareNativeKeys
         self.restoreNativeKeys = restoreNativeKeys
         self.directionalNativeFallback = directionalNativeFallback
+        self.assumesNativeKeyLeak = assumesNativeKeyLeak
     }
 
     func assignProfileID(_ profileID: UUID) {
@@ -650,6 +664,8 @@ final class HIDRemoteMonitor {
             AppLogger.shared.write(
                 "HID FILTER directional_fallback="
                     + (directionalNativeFallback ? "true" : "false")
+                    + " native_leak_assumed="
+                    + (assumesNativeKeyLeak ? "true" : "false")
             )
         }
 
@@ -741,6 +757,7 @@ final class HIDRemoteMonitor {
         permissionPollSubscription?.cancel()
         permissionPollSubscription = nil
         resetInputState()
+        onMonitoringEnded?("hid_monitor_stopped")
         nativeKeysNeutralized = false
         if ownsEventSuppressor { eventSuppressor.stop() }
         unregisterAllDeviceReportCallbacks()
@@ -1118,6 +1135,7 @@ final class HIDRemoteMonitor {
             resetInputState()
             nativeKeysNeutralized = false
             activeDeviceIsSeized = false
+            onMonitoringEnded?("remote_disconnected")
             updateStatus(LocalizedMessage("button_mapping.status.disconnected"))
             AppLogger.shared.write("HID DISCONNECTED")
             return
@@ -1272,7 +1290,8 @@ final class HIDRemoteMonitor {
                       for: button,
                       seized: routing.deviceSeized,
                       neutralized: routing.nativeKeysNeutralized,
-                      directionalFallback: directionalNativeFallback
+                      directionalFallback: directionalNativeFallback,
+                      assumeNativeKeyLeak: assumesNativeKeyLeak
                   ) else { continue }
             events.formUnion(button.nativeEvents)
         }
@@ -1323,6 +1342,23 @@ final class HIDRemoteMonitor {
         #endif
     }()
 
+    /// 映射回读通过后，是否仍按「原生事件会泄漏」处理。
+    ///
+    /// 2026-11-27 现场（Apple Silicon、macOS 27.0.1、RC003 monitored）：
+    /// `HID NATIVE MAPPING phase=prepare result=verified` 之后，tap 里仍然收到原生
+    /// 方向键 `HID FILTER miss type=10 event=key123 armed=false pending=1`，
+    /// 与 `HID EDGE` 的间隔只有 1–8 ms，每次按下泄漏一次。后果是 App 切换器的
+    /// 高亮只动一格就被系统提交、上下文菜单一按方向键就关闭。
+    /// 回读只证明字节写进去了，不证明系统停止投递，所以这里默认按「会泄漏」处理，
+    /// 让所有映射键都在事件层登记拦截。
+    ///
+    /// 关闭：`defaults write com.hd838a.RemoteMic assumeNativeKeyLeak -bool false`
+    /// （仅用于确认「映射已真正中和」的机型，关掉后不会再为映射键开拦截窗口）。
+    static let assumeNativeKeyLeak: Bool = {
+        if UserDefaults.standard.object(forKey: "assumeNativeKeyLeak") == nil { return true }
+        return UserDefaults.standard.bool(forKey: "assumeNativeKeyLeak")
+    }()
+
     /// 报告线程可以提前登记的原生事件。
     ///
     /// TV 与音量始终由 App 执行，判据与外层 `needsEventLevelArm` 一致。
@@ -1336,8 +1372,17 @@ final class HIDRemoteMonitor {
         for button: RemoteButton,
         seized: Bool,
         neutralized: Bool,
-        directionalFallback: Bool
+        directionalFallback: Bool,
+        assumeNativeKeyLeak: Bool = HIDRemoteMonitor.assumeNativeKeyLeak
     ) -> Bool {
+        guard !button.nativeEvents.isEmpty else { return false }
+        if assumeNativeKeyLeak {
+            // 泄漏现场（2026-11-27，Apple Silicon）：回读生效后原生事件照样投递，
+            // 而且比主线程登记早 1–8 ms，所有映射键都要在报告线程提前登记。
+            // 独占会话系统收不到原生事件，不必登记；映射未生效时原生事件就是
+            // 预期的那次投递（原生透传），提前登记会把它吞掉。
+            return !seized && neutralized
+        }
         if button == .tv || button == .volumeUp || button == .volumeDown {
             return Self.needsEventLevelArm(seized: seized, neutralized: neutralized)
         }
@@ -1610,6 +1655,7 @@ final class HIDRemoteMonitor {
         resetInputState()
         nativeKeysNeutralized = false
         activeDeviceIsSeized = false
+        onMonitoringEnded?("remote_disconnected")
     }
 
     private func process(usages: Set<UInt16>, timestampNanoseconds: UInt64) {
@@ -1648,6 +1694,13 @@ final class HIDRemoteMonitor {
 
         for usage in pressed.sorted() {
             guard let button = RemoteButton.usageMap[usage] else { continue }
+            if mouseModeEdgeHandler?(button, .down) == true {
+                // 鼠标模式接管的边沿由 App 自己解释，必须无条件登记：映射回读通过
+                // 并不等于系统停止投递（见 `assumeNativeKeyLeak`），漏一次就会同时
+                // 触发原生方向键 / 回车。
+                eventSuppressor.arm(button: button, edge: .down)
+                continue
+            }
             let preflightProfileID = profileID
             let preflightRecognizesDoubleClick = settings.configuredAction(
                 for: button,
@@ -1794,6 +1847,11 @@ final class HIDRemoteMonitor {
 
         for usage in released {
             let usedNativePassthrough = nativePassthroughUsages.remove(usage) != nil
+            if !usedNativePassthrough, let button = RemoteButton.usageMap[usage],
+               mouseModeEdgeHandler?(button, .up) == true {
+                eventSuppressor.arm(button: button, edge: .up)
+                continue
+            }
             if let button = RemoteButton.usageMap[usage],
                !usedNativePassthrough,
                shouldArmNativeEvent(for: button)
@@ -2956,7 +3014,9 @@ final class HIDRemoteMonitor {
 
     func cancelConfiguredInteractions(reason: String) { buttonInteractions.cancelAll(reason: reason) }
 
-    func cancelPendingButtonActions() {
+    /// 清掉在途的连发、单击锁存和手势。`reason` 写进结束 App 切换器的日志，
+    /// 让日志能看出是谁清的。
+    func cancelPendingButtonActions(reason: String = "common_phrases_opened") {
         repeatTimers.values.forEach { $0.cancel() }
         repeatTimers.removeAll()
         lastPageRepeatAt.removeAll()
@@ -2964,7 +3024,7 @@ final class HIDRemoteMonitor {
         nonRepeatableReleaseTimers.removeAll()
         nonRepeatablePressedButtons.removeAll()
         resetGestureRecognition()
-        if appSwitcherSession.isActive { finishAppSwitcherLifecycle(reason: "common_phrases_opened", confirmed: false) }
+        if appSwitcherSession.isActive { finishAppSwitcherLifecycle(reason: reason, confirmed: false) }
     }
 
     private func resetInputState(preservingPhysicalEdges: Bool = false) {
@@ -3037,7 +3097,7 @@ final class HIDRemoteMonitor {
         if button == .tv || button == .volumeUp || button == .volumeDown {
             return Self.needsEventLevelArm(
                 seized: activeDeviceIsSeized,
-                neutralized: nativeKeysNeutralized
+                neutralized: nativeDeliveryBlocked
             )
         }
         // 方向键同样会被泄漏（2026-11-07 现场：一次按下把光标推了两格），但它与实体
@@ -3045,14 +3105,16 @@ final class HIDRemoteMonitor {
         // `directionalNativeFallback` 收窄到有现场证据的构建（默认 Intel）。
         // 映射未生效时方向键本来就没有源头隔离，登记是修复前就有的行为，必须保留：
         // 默认左右动作走原生透传由调用点排除，其余动作（自定义快捷键等）仍要靠它。
+        // 2026-11-27 起 Apple Silicon 也有泄漏证据（`assumeNativeKeyLeak`），
+        // 此时 `nativeDeliveryBlocked` 为 false，方向键与普通键走同一条登记路径。
         if button.isDirectional {
             guard Self.needsEventLevelArm(
                 seized: activeDeviceIsSeized,
-                neutralized: nativeKeysNeutralized
+                neutralized: nativeDeliveryBlocked
             ) else { return false }
-            return !nativeKeysNeutralized || directionalNativeFallback
+            return !nativeDeliveryBlocked || directionalNativeFallback
         }
-        return !nativeKeysNeutralized
+        return !nativeDeliveryBlocked
     }
 
     private func prepareNativeKeyMapping() -> Bool {

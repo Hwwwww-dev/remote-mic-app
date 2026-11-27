@@ -12,6 +12,52 @@ struct ButtonBindingConfigurationTests {
         AppSettings(defaults: TestUserDefaults(suiteName: "UnifiedButtons.\(UUID().uuidString)")!)
     }
 
+    @Test func mouseModeBindingsAreIndependentOfKeyboardBindings() {
+        let settings = settings()
+
+        // 默认值等于引入分模式键位之前硬编码在鼠标模式里的行为。
+        #expect(settings.configuredMouseModeAction(for: .up, trigger: .singleClick, profileID: nil).action == .mouseCursorMove)
+        #expect(settings.configuredMouseModeAction(for: .ok, trigger: .singleClick, profileID: nil).action == .mouseLeftClick)
+        #expect(settings.configuredMouseModeAction(for: .ok, trigger: .doubleClick, profileID: nil).action == .mouseRightClick)
+        #expect(settings.configuredMouseModeAction(for: .ok, trigger: .longPress, profileID: nil).action == .returnKey)
+        #expect(settings.configuredMouseModeAction(for: .back, trigger: .singleClick, profileID: nil).action == .exitMouseMode)
+        #expect(settings.configuredMouseModeAction(for: .menu, trigger: .singleClick, profileID: nil).action == .disabled)
+
+        let keyboardUp = settings.configuredBaseAction(for: .up, trigger: .singleClick, profileID: nil)
+        settings.setMouseModeBinding(
+            ConfiguredButtonAction(action: .returnKey, shortcut: nil),
+            for: .up, trigger: .singleClick, profileID: nil
+        )
+        #expect(settings.configuredMouseModeAction(for: .up, trigger: .singleClick, profileID: nil).action == .returnKey)
+        // 鼠标模式绑定不能漏进键盘键位：上键在键盘模式仍是方向键，也不算显式配置。
+        #expect(settings.configuredBaseAction(for: .up, trigger: .singleClick, profileID: nil) == keyboardUp)
+        #expect(!settings.hasExplicitBaseBinding(for: .up, trigger: .singleClick, profileID: nil))
+        #expect(settings.hasExplicitMouseModeBinding(for: .up, trigger: .singleClick, profileID: nil))
+
+        settings.resetMouseModeBinding(for: .up, trigger: .singleClick, profileID: nil)
+        #expect(settings.configuredMouseModeAction(for: .up, trigger: .singleClick, profileID: nil).action == .mouseCursorMove)
+        #expect(!settings.hasExplicitMouseModeBinding(for: .up, trigger: .singleClick, profileID: nil))
+    }
+
+    @Test func legacyBindingDataWithoutAModeDecodesAsKeyboardMode() throws {
+        let legacy = #"[{"remoteProfileID":null,"button":"up","trigger":"singleClick","configured":{"action":"arrowUp","shortcut":null}}]"#
+        let decoded = try JSONDecoder().decode([UnifiedButtonBinding].self, from: Data(legacy.utf8))
+        #expect(decoded.count == 1)
+        #expect(decoded.first?.mode == .keyboard)
+
+        // 带模式的绑定写出后能原样读回。
+        let encoded = try JSONEncoder().encode([
+            UnifiedButtonBinding(
+                remoteProfileID: nil, button: .up, trigger: .singleClick,
+                mode: .mouse,
+                configured: ConfiguredButtonAction(action: .mouseCursorMove, shortcut: nil)
+            )
+        ])
+        let roundTripped = try JSONDecoder().decode([UnifiedButtonBinding].self, from: encoded)
+        #expect(roundTripped.first?.mode == .mouse)
+        #expect(roundTripped.first?.configured.action == .mouseCursorMove)
+    }
+
     @Test(arguments: [true, false]) func saveRecoveryDoesNotReloadConfirmedSuccess(success: Bool) {
         var reloads = 0
         var reads = 0

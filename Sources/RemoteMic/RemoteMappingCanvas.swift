@@ -137,6 +137,15 @@ struct RemoteMappingCanvas: View {
     var onVoiceSettings: () -> Void = {}
     /// 方案作用域只覆盖 10 个普通按键；不在范围内的按键置灰且不可点。
     var reservedButtons: Set<RemoteButton> = []
+    /// 鼠标模式下「按住」不参与：卡片头部不显示按住胶囊。
+    var showsHoldChip: Bool = true
+    /// 不参与分模式的按键在鼠标模式卡片上标一句说明，避免用户以为它也换了键位。
+    var modeBadge: (RemoteButton) -> String? = { _ in nil }
+    /// 当前编辑模式的强调色：键盘模式沿用系统主题色，鼠标模式换成模式色，
+    /// 让整页一眼看出正在改哪一套键位。橙色继续只表示“此刻正在生效”。
+    var modeAccent: Color = .accentColor
+    /// 该按键在当前编辑模式下可单独配动作：卡片描边和标题图标用模式色标出来。
+    var modeEditable: (RemoteButton) -> Bool = { _ in false }
 
     var body: some View {
         GeometryReader { geometry in
@@ -181,7 +190,8 @@ struct RemoteMappingCanvas: View {
                     end: metrics.cardEdgePoint(side: placement.side, targetY: placement.targetY),
                     side: placement.side,
                     selected: selectedButton == placement.button,
-                    showsAnchor: activeButtons.contains(placement.button)
+                    showsAnchor: activeButtons.contains(placement.button),
+                    accent: modeEditable(placement.button) ? modeAccent : nil
                 )
             }
             drawConnection(
@@ -202,7 +212,8 @@ struct RemoteMappingCanvas: View {
         end: CGPoint,
         side: RemoteMappingSide,
         selected: Bool,
-        showsAnchor: Bool
+        showsAnchor: Bool,
+        accent: Color? = nil
     ) {
         let arrowTip = RemoteMappingLayout.arrowTip(cardEdge: end, side: side)
         let controls = RemoteMappingLayout.connectionControlPoints(
@@ -214,7 +225,10 @@ struct RemoteMappingCanvas: View {
         path.move(to: start)
         path.addCurve(to: arrowTip, control1: controls.start, control2: controls.end)
 
-        let color = selected ? Color.accentColor : Color.secondary.opacity(0.42)
+        // 连线保持默认灰色，只有选中的卡片才上色；鼠标模式下选中的连线跟随橙色模式色。
+        let color = selected
+            ? (accent ?? Color.accentColor)
+            : Color.secondary.opacity(0.42)
         context.stroke(
             path,
             with: .color(color),
@@ -255,33 +269,41 @@ struct RemoteMappingCanvas: View {
         return VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 Image(systemName: button.systemImage)
+                    .foregroundStyle(Color.primary)
                     .frame(width: 14)
                 Text(button.displayName(using: localization))
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                 Spacer(minLength: 0)
-                Button {
-                    selectedButton = button
-                    onEditHold(button)
-                } label: {
-                    Text(holdSummary(button))
-                        .font(.system(
-                            size: RemoteMappingCardChrome.HoldChip.fontSize,
-                            weight: RemoteMappingCardChrome.HoldChip.fontWeight
-                        ))
+                if let badge = modeBadge(button) {
+                    Text(badge)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
-                        .truncationMode(.tail)
-                        .padding(.horizontal, RemoteMappingCardChrome.HoldChip.horizontalPadding)
-                        .padding(.vertical, RemoteMappingCardChrome.HoldChip.verticalPadding)
-                        .background(
-                            RemoteMappingCardChrome.HoldChip.background,
-                            in: RoundedRectangle(
-                                cornerRadius: RemoteMappingCardChrome.HoldChip.cornerRadius
+                } else if showsHoldChip {
+                    Button {
+                        selectedButton = button
+                        onEditHold(button)
+                    } label: {
+                        Text(holdSummary(button))
+                            .font(.system(
+                                size: RemoteMappingCardChrome.HoldChip.fontSize,
+                                weight: RemoteMappingCardChrome.HoldChip.fontWeight
+                            ))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .padding(.horizontal, RemoteMappingCardChrome.HoldChip.horizontalPadding)
+                            .padding(.vertical, RemoteMappingCardChrome.HoldChip.verticalPadding)
+                            .background(
+                                RemoteMappingCardChrome.HoldChip.background,
+                                in: RoundedRectangle(
+                                    cornerRadius: RemoteMappingCardChrome.HoldChip.cornerRadius
+                                )
                             )
-                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help("\(button.displayName(using: localization)) · \(holdSummary(button))")
                 }
-                .buttonStyle(.plain)
-                .help("\(button.displayName(using: localization)) · \(holdSummary(button))")
             }
 
             HStack(spacing: 4) {
@@ -318,7 +340,7 @@ struct RemoteMappingCanvas: View {
                                     ))
                                     .foregroundStyle(
                                         actionConfigured?(button, trigger) == true
-                                            ? Color.accentColor
+                                            ? (modeEditable(button) ? modeAccent : Color.accentColor)
                                             : Color.secondary
                                     )
                                     .lineLimit(1)
@@ -342,8 +364,10 @@ struct RemoteMappingCanvas: View {
             active
                 ? Color.orange.opacity(0.12)
                 : selected
-                    ? Color.accentColor.opacity(0.10)
-                    : Color.primary.opacity(0.035),
+                    ? (modeEditable(button) ? modeAccent : Color.accentColor).opacity(0.10)
+                    : modeEditable(button)
+                        ? modeAccent.opacity(0.06)
+                        : Color.primary.opacity(0.035),
             in: RoundedRectangle(cornerRadius: 10, style: .continuous)
         )
         .overlay {
@@ -352,8 +376,10 @@ struct RemoteMappingCanvas: View {
                     active
                         ? Color.orange.opacity(0.65)
                         : selected
-                            ? Color.accentColor.opacity(0.45)
-                            : Color.secondary.opacity(0.15)
+                            ? (modeEditable(button) ? modeAccent : Color.accentColor).opacity(0.45)
+                            : modeEditable(button)
+                                ? modeAccent.opacity(0.40)
+                                : Color.secondary.opacity(0.15)
                 )
         }
         .opacity(reserved ? 0.5 : 1)

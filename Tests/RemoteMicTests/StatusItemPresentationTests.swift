@@ -201,6 +201,23 @@ struct StatusItemPresentationTests {
         #expect(observed == [.disconnected, .streamingWarning, .streamingCritical, .disconnected])
     }
 
+    @Test func mouseModeOnlyCoversOrdinaryStates() {
+        let ordinary: [StatusItemPresentation] = [.disconnected, .connected, .streaming]
+        for base in ordinary {
+            #expect(StatusItemPresentation.resolvingMouseMode(base: base, isMouseModeActive: true) == .mouseMode)
+            #expect(StatusItemPresentation.resolvingMouseMode(base: base, isMouseModeActive: false) == base)
+        }
+        // 语音时长警告和严重状态比鼠标模式更紧急，保持原样。
+        #expect(
+            StatusItemPresentation.resolvingMouseMode(base: .streamingWarning, isMouseModeActive: true)
+                == .streamingWarning
+        )
+        #expect(
+            StatusItemPresentation.resolvingMouseMode(base: .streamingCritical, isMouseModeActive: true)
+                == .streamingCritical
+        )
+    }
+
     @MainActor
     @Test func nativeDimmingPreservesActionsAndUpdatesAccessibleDescription() throws {
         let button = NSStatusBarButton(frame: NSRect(x: 0, y: 0, width: 24, height: 22))

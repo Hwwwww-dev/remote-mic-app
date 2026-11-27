@@ -1,12 +1,61 @@
 import Foundation
 
+/// 键位所属的运行模式。键盘模式是默认模式，旧配置没有该字段时按键盘模式读入。
+enum MappingMode: String, Codable, CaseIterable, Identifiable {
+    case keyboard
+    case mouse
+
+    var id: String { rawValue }
+
+    var localizationKey: String {
+        switch self {
+        case .keyboard: return "button_mapping.mode.keyboard"
+        case .mouse: return "button_mapping.mode.mouse"
+        }
+    }
+}
+
 /// A host-owned binding. A missing profile override inherits this base value;
 /// `.disabled` is an explicit value and never falls through to another action.
 struct UnifiedButtonBinding: Codable, Equatable {
     var remoteProfileID: UUID?
     var button: RemoteButton
     var trigger: ButtonTrigger
+    /// 同一个按键在不同模式下是两份独立绑定。旧配置没有这个字段，
+    /// 解码时必须落到键盘模式，否则升级后用户键位会整体错位。
+    var mode: MappingMode
     var configured: ConfiguredButtonAction
+
+    init(
+        remoteProfileID: UUID?,
+        button: RemoteButton,
+        trigger: ButtonTrigger,
+        mode: MappingMode = .keyboard,
+        configured: ConfiguredButtonAction
+    ) {
+        self.remoteProfileID = remoteProfileID
+        self.button = button
+        self.trigger = trigger
+        self.mode = mode
+        self.configured = configured
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case remoteProfileID
+        case button
+        case trigger
+        case mode
+        case configured
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        remoteProfileID = try container.decodeIfPresent(UUID.self, forKey: .remoteProfileID)
+        button = try container.decode(RemoteButton.self, forKey: .button)
+        trigger = try container.decode(ButtonTrigger.self, forKey: .trigger)
+        mode = try container.decodeIfPresent(MappingMode.self, forKey: .mode) ?? .keyboard
+        configured = try container.decode(ConfiguredButtonAction.self, forKey: .configured)
+    }
 }
 
 struct ButtonLibraryAction: Identifiable, Equatable {
